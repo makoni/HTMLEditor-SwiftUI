@@ -11,6 +11,11 @@ import AppKit
 // MARK: - Theme & ColorScheme
 @MainActor
 public struct HTMLEditorTheme: Sendable {
+    public init(light: HTMLEditorColorScheme, dark: HTMLEditorColorScheme) {
+        self.light = light
+        self.dark = dark
+    }
+    
 	public let light: HTMLEditorColorScheme
 	public let dark: HTMLEditorColorScheme
 

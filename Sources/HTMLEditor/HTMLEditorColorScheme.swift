@@ -9,6 +9,15 @@
 import AppKit
 
 public struct HTMLEditorColorScheme {
+    public init(foreground: NSColor, background: NSColor, tag: NSColor, attributeName: NSColor, attributeValue: NSColor, font: NSFont) {
+        self.foreground = foreground
+        self.background = background
+        self.tag = tag
+        self.attributeName = attributeName
+        self.attributeValue = attributeValue
+        self.font = font
+    }
+    
 	public let foreground: NSColor
 	public let background: NSColor
 	public let tag: NSColor
