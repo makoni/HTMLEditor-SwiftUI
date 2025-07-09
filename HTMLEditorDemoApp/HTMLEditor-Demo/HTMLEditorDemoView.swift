@@ -8,7 +8,7 @@
 import SwiftUI
 import HTMLEditor
 
-struct HTMLEditorView: View {
+struct HTMLEditorDemoView: View {
     @Binding var html: String
 
     var body: some View {
@@ -16,7 +16,7 @@ struct HTMLEditorView: View {
             Text("HTML Editor Demo")
                 .font(.title)
                 .padding()
-
+            
             HTMLEditor(html: $html)
                 .frame(minWidth: 400, minHeight: 300)
                 .padding()

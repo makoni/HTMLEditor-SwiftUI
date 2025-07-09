@@ -28,7 +28,7 @@ struct HTMLEditorDemoApp: App {
 
     var body: some Scene {
         WindowGroup {
-            HTMLEditorView(html: $htmlContent)
+            HTMLEditorDemoView(html: $htmlContent)
         }
     }
 }
