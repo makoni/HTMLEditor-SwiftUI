@@ -107,8 +107,6 @@ public struct HTMLEditor: NSViewRepresentable {
 			textView.textColor = currentTheme.foreground
 			textView.textStorage?.setAttributedString(HTMLSyntaxHighlighter.highlight(html: parent.html, theme: currentTheme))
 		}
-
-		// No longer needed: parentScrollView/findScrollView
 	}
 }
 #endif
