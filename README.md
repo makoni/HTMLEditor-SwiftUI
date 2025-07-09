@@ -1,5 +1,7 @@
 # HTMLEditor-SwiftUI
 
+<img src="https://arm1.ru/img/uploaded/swiftui-text-editor-for-macos-with-html-syntax-highlighting.webp?1" alt="SwiftUI text editor for macOS with HTML syntax highlighting">
+
 HTMLEditor-SwiftUI is a Swift package designed for macOS (v13 and above) that provides a SwiftUI-based text editor with HTML syntax highlighting. It leverages the powerful [SwiftSoup](https://github.com/scinfu/SwiftSoup) library to parse HTML into an Abstract Syntax Tree (AST), enabling developers to work with HTML content programmatically.
 
 ## Features
