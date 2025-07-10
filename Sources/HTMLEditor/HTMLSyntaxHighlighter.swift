@@ -24,10 +24,18 @@ public struct HTMLSyntaxHighlighter {
 		do {
 			let doc = try SwiftSoup.parseBodyFragment(html)
 			let elements = try doc.getAllElements()
+
+			// Precompile regex patterns
+			var tagRegexCache: [String: Regex<Substring>] = [:]
+			var attrRegexCache: [String: Regex<Substring>] = [:]
+
 			for element in elements {
 				let tag = element.tagName()
 				let tagPattern = String(format: tagPatternTemplate, tag)
-				if let regex = try? Regex(tagPattern) {
+				let tagRegex = tagRegexCache[tag] ?? (try? Regex(tagPattern))
+				tagRegexCache[tag] = tagRegex
+
+				if let regex = tagRegex {
 					for match in html.matches(of: regex) {
 						let matchRange = NSRange(match.range, in: html)
 						let bracketLength = matchRange.length - tag.count
@@ -46,12 +54,16 @@ public struct HTMLSyntaxHighlighter {
 						}
 					}
 				}
+
 				if let attrs = element.getAttributes() {
 					for attr in attrs {
 						let attrName = attr.getKey()
 						let attrValue = attr.getValue()
 						let attrPattern = String(format: attrPatternTemplate, NSRegularExpression.escapedPattern(for: attrName), NSRegularExpression.escapedPattern(for: attrValue))
-						if let regex = try? Regex(attrPattern) {
+						let attrRegex = attrRegexCache[attrPattern] ?? (try? Regex(attrPattern))
+						attrRegexCache[attrPattern] = attrRegex
+
+						if let regex = attrRegex {
 							for match in html.matches(of: regex) {
 								let matchRange = NSRange(match.range, in: html)
 								let attrNameRange = NSRange(location: matchRange.location, length: attrName.count)
