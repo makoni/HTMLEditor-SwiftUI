@@ -7,88 +7,115 @@
 
 #if os(macOS)
 import AppKit
-import SwiftSoup
+@preconcurrency import SwiftSoup
 
 // MARK: - HTMLSyntaxHighlighter (syntax logic extracted)
 public struct HTMLSyntaxHighlighter {
-	// Regex patterns as static constants
-	static let tagPatternTemplate = #"<\/?%@\b"#
-	static let attrPatternTemplate = #"%@=\"%@\""#
+    // Regex patterns as static constants
+    static let tagPatternTemplate = #"<\/?%@\b"#
+    static let attrPatternTemplate = #"%@=\"%@\""#
 
-	public static func highlight(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
-		let attributed = NSMutableAttributedString(string: html)
-		let fullRange = NSRange(location: 0, length: attributed.length)
-		attributed.addAttribute(.font, value: theme.font, range: fullRange)
-		attributed.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
+    public static func highlight(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
+        let attributed = NSMutableAttributedString(string: html)
+        let fullRange = NSRange(location: 0, length: attributed.length)
+        attributed.addAttribute(.font, value: theme.font, range: fullRange)
+        attributed.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
 
-		do {
-			let doc = try SwiftSoup.parseBodyFragment(html)
-			let elements = try doc.getAllElements()
+        let tagColor = theme.tag
+        let attributeNameColor = theme.attributeName
+        let attributeValueColor = theme.attributeValue
 
-			// Precompile regex patterns
-			var tagRegexCache: [String: Regex<Substring>] = [:]
-			var attrRegexCache: [String: Regex<Substring>] = [:]
+        let changes = ThreadSafeArray<(NSRange, NSAttributedString.Key, NSColor)>()
 
-			for element in elements {
-				let tag = element.tagName()
-				let tagPattern = String(format: tagPatternTemplate, tag)
-				let tagRegex = tagRegexCache[tag] ?? (try? Regex(tagPattern))
-				tagRegexCache[tag] = tagRegex
+        if let doc = try? SwiftSoup.parseBodyFragment(html), let elements = try? doc.getAllElements() {
+            DispatchQueue.concurrentPerform(iterations: elements.count) { index in
+                let element = elements[index]
 
-				if let regex = tagRegex {
-					for match in html.matches(of: regex) {
-						let matchRange = NSRange(match.range, in: html)
-						let bracketLength = matchRange.length - tag.count
-						if bracketLength > 0 {
-							let bracketRange = NSRange(location: matchRange.location, length: bracketLength)
-							attributed.addAttribute(.foregroundColor, value: theme.tag, range: bracketRange)
-						}
-						let tagNameRange = NSRange(location: matchRange.location + bracketLength, length: tag.count)
-						attributed.addAttribute(.foregroundColor, value: theme.tag, range: tagNameRange)
-						let afterTagLocation = matchRange.location + matchRange.length
-						if afterTagLocation < fullRange.length {
-							let afterTagRange = NSRange(location: afterTagLocation, length: fullRange.length - afterTagLocation)
-							if let closeBracketRange = (html as NSString).range(of: ">", options: [], range: afterTagRange).toOptional(), closeBracketRange.length == 1 {
-								attributed.addAttribute(.foregroundColor, value: theme.tag, range: closeBracketRange)
-							}
-						}
-					}
-				}
+                // Process tag
+                let tag = element.tagName()
+                let tagPattern = String(format: tagPatternTemplate, tag)
+                let tagRegex = try? Regex(tagPattern)
 
-				if let attrs = element.getAttributes() {
-					for attr in attrs {
-						let attrName = attr.getKey()
-						let attrValue = attr.getValue()
-						let attrPattern = String(format: attrPatternTemplate, NSRegularExpression.escapedPattern(for: attrName), NSRegularExpression.escapedPattern(for: attrValue))
-						let attrRegex = attrRegexCache[attrPattern] ?? (try? Regex(attrPattern))
-						attrRegexCache[attrPattern] = attrRegex
+                if let regex = tagRegex {
+                    for match in html.matches(of: regex) {
+                        let matchRange = NSRange(match.range, in: html)
+                        let bracketLength = matchRange.length - tag.count
+                        if bracketLength > 0 {
+                            let bracketRange = NSRange(location: matchRange.location, length: bracketLength)
+                            changes.append((bracketRange, .foregroundColor, tagColor))
+                        }
+                        let tagNameRange = NSRange(location: matchRange.location + bracketLength, length: tag.count)
+                        changes.append((tagNameRange, .foregroundColor, tagColor))
+                        let afterTagLocation = matchRange.location + matchRange.length
+                        if afterTagLocation < fullRange.length {
+                            let afterTagRange = NSRange(location: afterTagLocation, length: fullRange.length - afterTagLocation)
+                            let closeBracketRange = (html as NSString).range(of: ">", options: [], range: afterTagRange)
+                            if closeBracketRange.location != NSNotFound && closeBracketRange.length == 1 {
+                                changes.append((closeBracketRange, .foregroundColor, tagColor))
+                            }
+                        }
+                    }
+                }
 
-						if let regex = attrRegex {
-							for match in html.matches(of: regex) {
-								let matchRange = NSRange(match.range, in: html)
-								let attrNameRange = NSRange(location: matchRange.location, length: attrName.count)
-								attributed.addAttribute(.foregroundColor, value: theme.attributeName, range: attrNameRange)
-								let valueStart = matchRange.location + attrName.count + 2
-								let valueLength = attrValue.count
-								let attrValueRange = NSRange(location: valueStart, length: valueLength)
-								attributed.addAttribute(.foregroundColor, value: theme.attributeValue, range: attrValueRange)
-								attributed.addAttribute(.foregroundColor, value: theme.attributeValue, range: NSRange(location: valueStart - 1, length: 1))
-								attributed.addAttribute(.foregroundColor, value: theme.attributeValue, range: NSRange(location: valueStart + valueLength, length: 1))
-							}
-						}
-					}
-				}
-			}
-		} catch {
-			// Optionally log error
-		}
-		return attributed
-	}
+                // Process attributes
+                if let attrs = element.getAttributes() {
+                    for attr in attrs {
+                        let attrName = attr.getKey()
+                        let attrValue = attr.getValue()
+                        let attrPattern = String(format: attrPatternTemplate, NSRegularExpression.escapedPattern(for: attrName), NSRegularExpression.escapedPattern(for: attrValue))
+                        let attrRegex = try? Regex(attrPattern)
+
+                        if let regex = attrRegex {
+                            for match in html.matches(of: regex) {
+                                let matchRange = NSRange(match.range, in: html)
+                                let attrNameRange = NSRange(location: matchRange.location, length: attrName.count)
+                                changes.append((attrNameRange, .foregroundColor, attributeNameColor))
+                                let valueStart = matchRange.location + attrName.count + 2
+                                let valueLength = attrValue.count
+                                let attrValueRange = NSRange(location: valueStart, length: valueLength)
+                                changes.append((attrValueRange, .foregroundColor, attributeValueColor))
+                                changes.append((NSRange(location: valueStart - 1, length: 1), .foregroundColor, attributeValueColor))
+                                changes.append((NSRange(location: valueStart + valueLength, length: 1), .foregroundColor, attributeValueColor))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply all changes to attributed
+            for change in changes.getAll() {
+                attributed.addAttribute(change.1, value: change.2, range: change.0)
+            }
+        } else {
+            print("Error during HTML parsing or processing")
+        }
+
+        return attributed
+    }
 }
 
-private extension NSRange {
-	func toOptional() -> NSRange? {
-		return self.location != NSNotFound ? self : nil
-	}
+extension NSRange {
+    func toOptional() -> NSRange? {
+        return self.location != NSNotFound ? self : nil
+    }
 }
+
+// Thread-safe array implementation
+final class ThreadSafeArray<Element: Sendable>: @unchecked Sendable {
+    private var array: [Element] = []
+    private let queue = DispatchQueue(label: "ThreadSafeArrayQueue", attributes: .concurrent)
+
+    func append(_ newElement: Element) {
+        queue.async(flags: .barrier) {
+            self.array.append(newElement)
+        }
+    }
+
+    func getAll() -> [Element] {
+        queue.sync {
+            return self.array
+        }
+    }
+}
+
 #endif
