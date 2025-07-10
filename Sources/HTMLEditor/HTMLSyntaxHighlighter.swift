@@ -25,7 +25,7 @@ public struct HTMLSyntaxHighlighter {
         let attributeNameColor = theme.attributeName
         let attributeValueColor = theme.attributeValue
 
-        let changes = ThreadSafeArray<(NSRange, NSAttributedString.Key, NSColor)>()
+        let changes = ThreadSafeArray<(range: NSRange, attributeKey: NSAttributedString.Key, color: NSColor)>()
 
         if let doc = try? SwiftSoup.parseBodyFragment(html), let elements = try? doc.getAllElements() {
             DispatchQueue.concurrentPerform(iterations: elements.count) { index in
@@ -84,7 +84,7 @@ public struct HTMLSyntaxHighlighter {
 
             // Apply all changes to attributed
             for change in changes.getAll() {
-                attributed.addAttribute(change.1, value: change.2, range: change.0)
+                attributed.addAttribute(change.attributeKey, value: change.color, range: change.range)
             }
         } else {
             print("Error during HTML parsing or processing")
