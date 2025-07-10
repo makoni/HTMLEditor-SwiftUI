@@ -41,6 +41,7 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = false
+		textView.isAutomaticQuoteSubstitutionEnabled = false
 
 		// Set text container and background drawing to allow background color
 		textView.drawsBackground = true
