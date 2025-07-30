@@ -7,7 +7,7 @@
 
 #if os(macOS)
 import AppKit
-@preconcurrency import SwiftSoup
+import SwiftSoup
 
 // MARK: - HTMLSyntaxHighlighter (syntax logic extracted)
 public struct HTMLSyntaxHighlighter {
@@ -28,8 +28,9 @@ public struct HTMLSyntaxHighlighter {
         let changes = ThreadSafeArray<(range: NSRange, attributeKey: NSAttributedString.Key, color: NSColor)>()
 
         if let doc = try? SwiftSoup.parseBodyFragment(html), let elements = try? doc.getAllElements() {
-            DispatchQueue.concurrentPerform(iterations: elements.count) { index in
-                let element = elements[index]
+            let elementArray = elements.array()
+            DispatchQueue.concurrentPerform(iterations: elementArray.count) { index in
+                let element = elementArray[index]
 
                 // Process tag
                 let tag = element.tagName()
