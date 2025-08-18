@@ -92,10 +92,29 @@ public struct HTMLEditor: NSViewRepresentable {
 			let newText = textView.string
 			if parent.html != newText {
 				parent.html = newText
-				let selectedRange = textView.selectedRange()  // Save cursor position
+				// Save cursor position and visible area to avoid scroll jumps when
+				// replacing the textStorage attributed string for syntax highlighting.
+				let selectedRange = textView.selectedRange()
+				let visibleRect = textView.enclosingScrollView?.contentView.bounds ?? .zero
+
 				let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
-				textView.textStorage?.setAttributedString(HTMLSyntaxHighlighter.highlight(html: newText, theme: currentTheme))
-				textView.setSelectedRange(selectedRange)  // Restore cursor position
+				let highlighted = HTMLSyntaxHighlighter.highlight(html: newText, theme: currentTheme)
+				// Replace text storage without disturbing layout more than necessary.
+				textView.textStorage?.beginEditing()
+				textView.textStorage?.setAttributedString(highlighted)
+				textView.textStorage?.endEditing()
+
+				// Clamp selection to valid range and restore it.
+				let maxLocation = (textView.string as NSString).length
+				let clampedLocation = min(selectedRange.location, maxLocation)
+				let clampedLength = min(selectedRange.length, maxLocation - clampedLocation)
+				textView.setSelectedRange(NSRange(location: clampedLocation, length: clampedLength))
+
+				// Restore visible rect (scroll position) on the enclosing scroll view.
+				if let scrollView = textView.enclosingScrollView {
+					scrollView.contentView.scroll(to: visibleRect.origin)
+					scrollView.reflectScrolledClipView(scrollView.contentView)
+				}
 			}
 		}
 
