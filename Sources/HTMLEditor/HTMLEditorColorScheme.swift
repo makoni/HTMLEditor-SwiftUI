@@ -8,7 +8,7 @@
 #if os(macOS)
 import AppKit
 
-public struct HTMLEditorColorScheme {
+public struct HTMLEditorColorScheme: @unchecked Sendable {
     public init(foreground: NSColor, background: NSColor, tag: NSColor, attributeName: NSColor, attributeValue: NSColor, font: NSFont) {
         self.foreground = foreground
         self.background = background
