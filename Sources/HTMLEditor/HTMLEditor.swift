@@ -54,7 +54,9 @@ public struct HTMLEditor: NSViewRepresentable {
 		}
 
 		textView.string = html
-		textView.textStorage?.setAttributedString(HTMLSyntaxHighlighter.highlight(html: html, theme: currentTheme))
+		if html.utf16.count <= HTMLSyntaxHighlighter.maxHighlightLength {
+			textView.textStorage?.setAttributedString(HTMLSyntaxHighlighter.highlight(html: html, theme: currentTheme))
+		}
 		textView.coordinator = context.coordinator
 
 		let scrollView = NSScrollView()
@@ -89,14 +91,9 @@ public struct HTMLEditor: NSViewRepresentable {
 
 	public func updateNSView(_ scrollView: NSScrollView, context: Context) {
 		guard let textView = scrollView.documentView as? NSTextView else { return }
-		if textView.string != html {
-			// Update coordinator's tracking
-			context.coordinator.previousText = html
-			context.coordinator.highlightedRanges.removeAll()
-			context.coordinator.highlightedRanges.insert(NSRange(location: 0, length: html.count))
-			
+		if context.coordinator.shouldApplyExternalUpdate(incomingHTML: html, currentText: textView.string) {
 			let currentTheme = theme.current(for: NSApp.effectiveAppearance)
-			textView.textStorage?.setAttributedString(HTMLSyntaxHighlighter.highlight(html: html, theme: currentTheme))
+			context.coordinator.scheduleExternalHighlightUpdate(html: html, theme: currentTheme, textView: textView)
 		}
 	}
 
@@ -114,13 +111,50 @@ public struct HTMLEditor: NSViewRepresentable {
 		// Removed range-based highlighting, now using visible area only
 		private var isUpdatingFromHighlighting = false
 		var previousText = ""
-		private var visibleHighlightingTimer: Timer?
+		private var visibleHighlightDebounceTask: Task<Void, Never>?
+		private var visibleHighlightTask: Task<Void, Never>?
+		private var prewarmTask: Task<Void, Never>?
+		private var fullHighlightTask: Task<Void, Never>?
+		private var documentVersion: Int = 0
+		private var pendingLocalBindingSyncHTML: String?
+		private var cachedFullHighlightPlan: HTMLSyntaxHighlighter.HighlightPlan?
+		private var cachedFullHighlightVersion: Int?
 		private var lastVisibleRange = NSRange(location: 0, length: 0)
-		var highlightedRanges = Set<NSRange>()
+		var highlightedRanges: [NSRange] = []
 
 		init(_ parent: HTMLEditor) {
 			self.parent = parent
 			super.init()
+		}
+
+		@MainActor
+		func scheduleExternalHighlightUpdate(html: String, theme: HTMLEditorColorScheme, textView: NSTextView) {
+			previousText = html
+			pendingLocalBindingSyncHTML = nil
+			documentVersion &+= 1
+			lastVisibleRange = NSRange(location: 0, length: 0)
+			highlightedRanges.removeAll()
+			highlightedRanges.append(NSRange(location: 0, length: html.utf16.count))
+			cachedFullHighlightPlan = nil
+			cachedFullHighlightVersion = nil
+			visibleHighlightTask?.cancel()
+			prewarmTask?.cancel()
+			performFullHighlighting(html: html, theme: theme, textView: textView)
+		}
+
+		@MainActor
+		func shouldApplyExternalUpdate(incomingHTML: String, currentText: String) -> Bool {
+			if let pendingLocalBindingSyncHTML {
+				if incomingHTML == pendingLocalBindingSyncHTML {
+					self.pendingLocalBindingSyncHTML = nil
+					return false
+				}
+
+				// Ignore stale SwiftUI binding snapshots while local edits are still propagating.
+				return false
+			}
+
+			return currentText != incomingHTML
 		}
 
 		public func textDidChange(_ notification: Notification) {
@@ -129,11 +163,17 @@ public struct HTMLEditor: NSViewRepresentable {
 			
 			let newText = textView.string
 			if parent.html != newText {
-				let oldLength = previousText.count
-				let newLength = newText.count
+				let oldLength = previousText.utf16.count
+				let newLength = newText.utf16.count
 				
 				previousText = newText
+				pendingLocalBindingSyncHTML = newText
 				parent.html = newText
+				documentVersion &+= 1
+				cachedFullHighlightPlan = nil
+				cachedFullHighlightVersion = nil
+				fullHighlightTask?.cancel()
+				prewarmTask?.cancel()
 				
 				// For major changes (paste, large inserts), clear all highlighted ranges
 				let isMajorChange = abs(newLength - oldLength) > 50 || oldLength == 0
@@ -157,11 +197,42 @@ public struct HTMLEditor: NSViewRepresentable {
 		private func performFullHighlighting(html: String, theme: HTMLEditorColorScheme, textView: NSTextView) {
 			guard let scrollView = textView.enclosingScrollView else { return }
 			
-			// Save cursor position and scroll state for full replacement
+			let currentVersion = documentVersion
+			fullHighlightTask?.cancel()
+
+			if html.utf16.count > 50_000 {
+				cachedFullHighlightPlan = nil
+				cachedFullHighlightVersion = nil
+				applyPlainTextResult(html: html, to: textView, in: scrollView)
+				return
+			}
+			
+			fullHighlightTask = Task { [weak self, weak textView, weak scrollView] in
+				guard let self else { return }
+				let plan = await HTMLSyntaxHighlighter.plannedFullHighlight(html: html)
+				guard !Task.isCancelled else { return }
+
+				await MainActor.run {
+					guard let textView,
+						  let scrollView,
+						  self.documentVersion == currentVersion else { return }
+					self.cachedFullHighlightPlan = plan
+					self.cachedFullHighlightVersion = currentVersion
+					let highlighted = HTMLSyntaxHighlighter.attributedString(html: html, theme: theme, plan: plan)
+					self.applyFullHighlightResult(highlighted, to: textView, in: scrollView)
+				}
+			}
+		}
+
+		@MainActor
+		private func applyFullHighlightResult(
+			_ highlighted: NSAttributedString,
+			to textView: NSTextView,
+			in scrollView: NSScrollView
+		) {
 			let selectedRange = textView.selectedRange()
 			let visibleRect = scrollView.documentVisibleRect
-			let highlighted = HTMLSyntaxHighlighter.highlight(html: html, theme: theme)
-			
+
 			// Prevent recursive updates
 			isUpdatingFromHighlighting = true
 			
@@ -170,7 +241,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			textView.textStorage?.endEditing()
 			
 			// Restore selection with bounds checking
-			let maxLocation = textView.string.count
+			let maxLocation = textView.string.utf16.count
 			let clampedLocation = min(selectedRange.location, maxLocation)
 			let clampedLength = min(selectedRange.length, maxLocation - clampedLocation)
 			textView.setSelectedRange(NSRange(location: clampedLocation, length: clampedLength))
@@ -185,6 +256,36 @@ public struct HTMLEditor: NSViewRepresentable {
 			isUpdatingFromHighlighting = false
 		}
 
+		@MainActor
+		private func applyPlainTextResult(html: String, to textView: NSTextView, in scrollView: NSScrollView) {
+			let selectedRange = textView.selectedRange()
+			let visibleRect = scrollView.documentVisibleRect
+
+			isUpdatingFromHighlighting = true
+
+			if let layoutManager = textView.layoutManager {
+				HTMLSyntaxHighlighter.clearTemporaryHighlights(
+					in: layoutManager,
+					range: NSRange(location: 0, length: textView.string.utf16.count)
+				)
+			}
+
+			textView.string = html
+
+			let maxLocation = textView.string.utf16.count
+			let clampedLocation = min(selectedRange.location, maxLocation)
+			let clampedLength = min(selectedRange.length, maxLocation - clampedLocation)
+			textView.setSelectedRange(NSRange(location: clampedLocation, length: clampedLength))
+
+			CATransaction.begin()
+			CATransaction.setDisableActions(true)
+			scrollView.contentView.setBoundsOrigin(visibleRect.origin)
+			scrollView.reflectScrolledClipView(scrollView.contentView)
+			CATransaction.commit()
+
+			isUpdatingFromHighlighting = false
+		}
+
 		// Appearance change handler
 		@MainActor
 		func systemAppearanceChanged(textView: NSTextView) {
@@ -193,8 +294,15 @@ public struct HTMLEditor: NSViewRepresentable {
 			textView.backgroundColor = currentTheme.background
 			textView.textColor = currentTheme.foreground
 			
-			// Apply highlighting immediately for appearance changes
-			performFullHighlighting(html: parent.html, theme: currentTheme, textView: textView)
+			if let cachedFullHighlightPlan,
+			   cachedFullHighlightVersion == documentVersion,
+			   let scrollView = textView.enclosingScrollView {
+				let highlighted = HTMLSyntaxHighlighter.attributedString(html: parent.html, theme: currentTheme, plan: cachedFullHighlightPlan)
+				applyFullHighlightResult(highlighted, to: textView, in: scrollView)
+			} else {
+				// Apply highlighting immediately for appearance changes
+				performFullHighlighting(html: parent.html, theme: currentTheme, textView: textView)
+			}
 		}
 		
 		// MARK: - Scroll Detection
@@ -208,36 +316,45 @@ public struct HTMLEditor: NSViewRepresentable {
 		
 		@MainActor
 		private func scheduleVisibleRangeHighlighting(textView: NSTextView, scrollView: NSScrollView, forceHighlight: Bool = false) {
-			visibleHighlightingTimer?.invalidate()
-			
-			visibleHighlightingTimer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: false) { [weak self, weak textView, weak scrollView] _ in
-				guard let self = self,
-					  let textView = textView,
-					  let scrollView = scrollView else { return }
+			visibleHighlightDebounceTask?.cancel()
 
-				MainActor.assumeIsolated {
-					self.highlightVisibleRange(textView: textView, scrollView: scrollView, forceHighlight: forceHighlight)
+			visibleHighlightDebounceTask = Task { @MainActor [weak self, weak textView, weak scrollView] in
+				do {
+					try await Task.sleep(nanoseconds: 10_000_000) // 0.01 s
+				} catch {
+					return // Task was cancelled — a newer schedule superseded this one
 				}
+				guard let self, let textView, let scrollView else { return }
+				let visibleRect = scrollView.documentVisibleRect
+				guard let layoutManager = textView.layoutManager,
+					  let textContainer = textView.textContainer,
+					  let textStorage = textView.textStorage else { return }
+
+				let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+				let visibleRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+				self.highlightVisibleRange(
+					textView: textView,
+					scrollView: scrollView,
+					textStorage: textStorage,
+					visibleRange: visibleRange,
+					forceHighlight: forceHighlight
+				)
 			}
 		}
 		
 		@MainActor
-		private func highlightVisibleRange(textView: NSTextView, scrollView: NSScrollView, forceHighlight: Bool = false) {
-			guard let textStorage = textView.textStorage else { return }
-			
+		private func highlightVisibleRange(
+			textView: NSTextView,
+			scrollView: NSScrollView,
+			textStorage: NSTextStorage,
+			visibleRange: NSRange,
+			forceHighlight: Bool = false
+		) {
 			// Early return for empty text to prevent crashes
 			if textStorage.length == 0 {
 				return
 			}
-			
-			// Calculate visible range using layout manager
-			let visibleRect = scrollView.documentVisibleRect
-			guard let layoutManager = textView.layoutManager,
-				  let textContainer = textView.textContainer else { return }
-			
-			let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
-			let visibleRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
-			
+
 			// Validate the visible range
 			guard visibleRange.location != NSNotFound && 
 				  visibleRange.location < textStorage.length &&
@@ -255,52 +372,164 @@ public struct HTMLEditor: NSViewRepresentable {
 			lastVisibleRange = visibleRange
 			
 			// Check if this range is already highlighted (unless forced)
-			let needsHighlighting = forceHighlight || !highlightedRanges.contains { highlightedRange in
-				NSIntersectionRange(visibleRange, highlightedRange).length > Int(Double(visibleRange.length) * 0.8)
-			}
+			let needsHighlighting = rangeNeedsHighlighting(visibleRange, forceHighlight: forceHighlight)
 			
 			if needsHighlighting {
 				// Expand visible range slightly for smoother scrolling
 				let expandedStart = max(0, visibleRange.location - 200)
 				let expandedEnd = min(textStorage.length, visibleRange.location + visibleRange.length + 200)
 				let expandedRange = NSRange(location: expandedStart, length: expandedEnd - expandedStart)
-				
-				// Perform highlighting
 				let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
-				performVisibleRangeHighlighting(range: expandedRange, theme: currentTheme, textStorage: textStorage)
-				
-				// Track highlighted range
-				highlightedRanges.insert(expandedRange)
-				
-				// Limit tracked ranges to prevent memory growth
-				if highlightedRanges.count > 10 {
-					highlightedRanges.removeFirst()
+				let textSnapshot = textStorage.string
+				let currentVersion = documentVersion
+
+				visibleHighlightTask?.cancel()
+				visibleHighlightTask = Task { [weak self, weak textView] in
+					guard let self else { return }
+					let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(text: textSnapshot, requestedRange: expandedRange)
+					guard !Task.isCancelled else { return }
+
+					await MainActor.run {
+						guard let textView,
+							  let currentTextStorage = textView.textStorage,
+							  self.documentVersion == currentVersion,
+							  currentTextStorage.string == textSnapshot else { return }
+						self.performVisibleRangeHighlighting(plan: plan, theme: currentTheme, textStorage: currentTextStorage)
+						self.recordHighlightedRange(plan.coveredRange)
+						if !forceHighlight {
+							self.scheduleViewportPrewarm(
+								around: visibleRange,
+								textSnapshot: textSnapshot,
+								theme: currentTheme,
+								version: currentVersion,
+								textView: textView
+							)
+						}
+					}
 				}
 			}
 		}
 		
 		@MainActor
-		private func performVisibleRangeHighlighting(range: NSRange, theme: HTMLEditorColorScheme, textStorage: NSTextStorage) {
+		private func performVisibleRangeHighlighting(plan: HTMLSyntaxHighlighter.HighlightPlan, theme: HTMLEditorColorScheme, textStorage: NSTextStorage) {
 			// Prevent recursive updates during visible range highlighting
 			isUpdatingFromHighlighting = true
-			
-			textStorage.beginEditing()
-			
-			var expandedRange = NSRange()
-			HTMLSyntaxHighlighter.highlightRange(
-				in: textStorage,
-				range: range,
-				theme: theme,
-				expandedRange: &expandedRange
-			)
-			
-			textStorage.endEditing()
+
+			if let layoutManager = textStorage.layoutManagers.first {
+				HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: layoutManager, theme: theme)
+			} else {
+				textStorage.beginEditing()
+				HTMLSyntaxHighlighter.apply(plan: plan, to: textStorage, theme: theme)
+				textStorage.endEditing()
+			}
 			
 			isUpdatingFromHighlighting = false
 		}
+
+		@MainActor
+		private func recordHighlightedRange(_ range: NSRange) {
+			guard range.location != NSNotFound, range.length > 0 else { return }
+
+			var mergedRange = range
+			var retainedRanges: [NSRange] = []
+			retainedRanges.reserveCapacity(highlightedRanges.count + 1)
+
+			for existingRange in highlightedRanges {
+				if shouldMerge(existingRange, with: mergedRange) {
+					mergedRange = union(of: existingRange, and: mergedRange)
+				} else {
+					retainedRanges.append(existingRange)
+				}
+			}
+
+			retainedRanges.append(mergedRange)
+			if retainedRanges.count > 10 {
+				retainedRanges.removeFirst(retainedRanges.count - 10)
+			}
+
+			highlightedRanges = retainedRanges
+		}
+
+		@MainActor
+		private func rangeNeedsHighlighting(_ range: NSRange, forceHighlight: Bool = false) -> Bool {
+			forceHighlight || !highlightedRanges.contains { highlightedRange in
+				NSIntersectionRange(range, highlightedRange).length > Int(Double(range.length) * 0.8)
+			}
+		}
+
+		@MainActor
+		private func scheduleViewportPrewarm(
+			around visibleRange: NSRange,
+			textSnapshot: String,
+			theme: HTMLEditorColorScheme,
+			version: Int,
+			textView: NSTextView
+		) {
+			prewarmTask?.cancel()
+
+			let beforeRange = NSRange(location: max(0, visibleRange.location - visibleRange.length), length: visibleRange.length)
+			let afterStart = NSMaxRange(visibleRange)
+			let maxLength = textSnapshot.utf16.count
+			let afterRange = NSRange(
+				location: min(afterStart, maxLength),
+				length: min(visibleRange.length, max(0, maxLength - min(afterStart, maxLength)))
+			)
+
+			let candidates = [beforeRange, afterRange].filter {
+				$0.location != NSNotFound && $0.length > 0 && rangeNeedsHighlighting($0)
+			}
+			guard !candidates.isEmpty else { return }
+
+			prewarmTask = Task { [weak self, weak textView] in
+				guard let self else { return }
+
+				do {
+					try await Task.sleep(nanoseconds: 75_000_000)
+				} catch {
+					return
+				}
+
+				for candidate in candidates {
+					guard !Task.isCancelled else { return }
+					let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(text: textSnapshot, requestedRange: candidate)
+					guard !Task.isCancelled else { return }
+
+					await MainActor.run {
+						guard let textView,
+							  let currentTextStorage = textView.textStorage,
+							  self.documentVersion == version,
+							  currentTextStorage.string == textSnapshot,
+							  self.rangeNeedsHighlighting(plan.coveredRange) else { return }
+						self.performVisibleRangeHighlighting(plan: plan, theme: theme, textStorage: currentTextStorage)
+						self.recordHighlightedRange(plan.coveredRange)
+					}
+				}
+			}
+		}
+
+		@MainActor
+		private func shouldMerge(_ lhs: NSRange, with rhs: NSRange) -> Bool {
+			if NSIntersectionRange(lhs, rhs).length > 0 {
+				return true
+			}
+
+			let lhsEnd = NSMaxRange(lhs)
+			let rhsEnd = NSMaxRange(rhs)
+			return abs(lhsEnd - rhs.location) <= 1 || abs(rhsEnd - lhs.location) <= 1
+		}
+
+		@MainActor
+		private func union(of lhs: NSRange, and rhs: NSRange) -> NSRange {
+			let start = min(lhs.location, rhs.location)
+			let end = max(NSMaxRange(lhs), NSMaxRange(rhs))
+			return NSRange(location: start, length: end - start)
+		}
 		
 		deinit {
-			visibleHighlightingTimer?.invalidate()
+			visibleHighlightDebounceTask?.cancel()
+			visibleHighlightTask?.cancel()
+			prewarmTask?.cancel()
+			fullHighlightTask?.cancel()
 			NotificationCenter.default.removeObserver(self)
 		}
 	}

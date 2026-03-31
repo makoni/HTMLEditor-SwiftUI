@@ -1,293 +1,377 @@
-//
-//  HTMLSyntaxHighlighter.swift
-//  HTMLEditor-SwiftUI
-//
-//  Created by Sergei Armodin on 07.07.2025.
-//
-
 #if os(macOS)
 import AppKit
+import Foundation
 
-// MARK: - HTMLSyntaxHighlighter (syntax logic extracted)
 public struct HTMLSyntaxHighlighter {
-    private static let maxHighlightLength = 50_000 // Limit highlighting for very large content
-    
+    static let maxHighlightLength = 50_000
+
+    enum HighlightRole: Sendable {
+        case tag
+        case attributeName
+        case attributeValue
+    }
+
+    struct HighlightSpan: Sendable {
+        let range: NSRange
+        let role: HighlightRole
+    }
+
+    struct HighlightPlan: Sendable {
+        let coveredRange: NSRange
+        let spans: [HighlightSpan]
+    }
+
+    private static let planner = HTMLHighlightPlanner()
+
     public static func highlight(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
-        // For very large content, apply basic styling only
-        if html.count > maxHighlightLength {
-            return createBasicAttributedString(html: html, theme: theme)
+        if html.utf16.count > maxHighlightLength {
+            return basicAttributedString(html: html, theme: theme)
         }
+
+        let plan = HTMLHighlightPlanBuilder.fullPlan(for: html)
+        return attributedString(html: html, theme: theme, plan: plan)
+    }
+
+    static func plannedFullHighlight(html: String) async -> HighlightPlan? {
+        guard html.utf16.count <= maxHighlightLength else { return nil }
+        return await planner.fullPlan(for: html)
+    }
+
+    static func plannedRangeHighlight(text: String, requestedRange: NSRange) async -> HighlightPlan {
+        await planner.rangePlan(for: text, requestedRange: requestedRange)
+    }
+
+    static func attributedString(html: String, theme: HTMLEditorColorScheme, plan: HighlightPlan?) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: html)
         let fullRange = NSRange(location: 0, length: attributed.length)
-        attributed.addAttribute(.font, value: theme.font, range: fullRange)
-        attributed.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
+        applyBaseAttributes(to: attributed, range: fullRange, theme: theme)
 
-        let tagColor = theme.tag
-        let attributeNameColor = theme.attributeName
-        let attributeValueColor = theme.attributeValue
-
-        // Use optimized single-pass highlighting with precompiled regex patterns
-        let changes = HighlightChanges()
-        
-        // Single pass: find all HTML tags and brackets
-        let htmlTagRegex = try! Regex(#"</?[a-zA-Z][a-zA-Z0-9]*[^>]*>"#)
-        for match in html.matches(of: htmlTagRegex) {
-            let matchRange = NSRange(match.range, in: html)
-            let matchText = String(html[match.range])
-            
-            // Highlight opening/closing brackets
-            if matchText.hasPrefix("<") {
-                changes.addChange(NSRange(location: matchRange.location, length: 1), .foregroundColor, tagColor)
-            }
-            if matchText.hasSuffix(">") {
-                changes.addChange(NSRange(location: matchRange.location + matchRange.length - 1, length: 1), .foregroundColor, tagColor)
-            }
-            
-            // Extract and highlight tag name
-            let tagStartIndex = matchText.hasPrefix("</") ? 2 : 1
-            if let spaceIndex = matchText.firstIndex(of: " ") ?? matchText.firstIndex(of: ">") {
-                let tagEndIndex = matchText.distance(from: matchText.startIndex, to: spaceIndex)
-                if tagEndIndex > tagStartIndex {
-                    let tagRange = NSRange(location: matchRange.location + tagStartIndex, length: tagEndIndex - tagStartIndex)
-                    changes.addChange(tagRange, .foregroundColor, tagColor)
-                }
-            }
-        }
-        
-        // Single pass: find all attributes
-        let attributeRegex = try! Regex(#"([a-zA-Z-]+)\s*=\s*"([^"]*)"|([a-zA-Z-]+)\s*=\s*'([^']*)'"#)
-        for match in html.matches(of: attributeRegex) {
-            let matchRange = NSRange(match.range, in: html)
-            let matchText = String(html[match.range])
-            
-            // Parse attribute name and value
-            if let equalIndex = matchText.firstIndex(of: "=") {
-                let nameLength = matchText.distance(from: matchText.startIndex, to: equalIndex)
-                let nameRange = NSRange(location: matchRange.location, length: nameLength)
-                changes.addChange(nameRange, .foregroundColor, attributeNameColor)
-                
-                // Find quoted value
-                let valueStart = matchText.index(after: equalIndex)
-                if let quoteChar = matchText[valueStart...].first, quoteChar == "\"" || quoteChar == "'" {
-                    if let endQuoteIndex = matchText[matchText.index(after: valueStart)...].firstIndex(of: quoteChar) {
-                        let valueStartOffset = matchText.distance(from: matchText.startIndex, to: valueStart)
-                        let valueEndOffset = matchText.distance(from: matchText.startIndex, to: endQuoteIndex) + 1
-                        let valueRange = NSRange(location: matchRange.location + valueStartOffset, length: valueEndOffset - valueStartOffset)
-                        changes.addChange(valueRange, .foregroundColor, attributeValueColor)
-                    }
-                }
-            }
+        if let plan {
+            apply(spans: plan.spans, to: attributed, theme: theme)
         }
 
-        // Apply all changes efficiently
-        changes.applyToAttributedString(attributed)
-        
         return attributed
     }
-    
-    private static func createBasicAttributedString(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
+
+    static func basicAttributedString(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: html)
         let fullRange = NSRange(location: 0, length: attributed.length)
-        attributed.addAttribute(.font, value: theme.font, range: fullRange)
-        attributed.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
+        applyBaseAttributes(to: attributed, range: fullRange, theme: theme)
         return attributed
     }
-    
-    // Incremental highlighting for specific range
+
     public static func highlightRange(
         in textStorage: NSTextStorage,
         range: NSRange,
         theme: HTMLEditorColorScheme,
         expandedRange: inout NSRange
     ) {
-        let text = textStorage.string
-        let textLength = text.count
-        
-        // Early return for empty text or invalid range
-        if textLength == 0 || range.location == NSNotFound || range.location < 0 || range.location >= textLength {
-            expandedRange = NSRange(location: 0, length: 0)
-            return
-        }
-        
-        // Expand range conservatively to include complete HTML tags
-        let expandRadius = min(100, textLength / 10) // Limit expansion based on document size
-        let expandedStart = max(0, range.location - expandRadius)
-        let expandedEnd = min(textLength, range.location + range.length + expandRadius)
-        expandedRange = NSRange(location: expandedStart, length: expandedEnd - expandedStart)
-        
-        // Limit maximum range size to prevent performance issues
-        if expandedRange.length > 2000 {
-            let center = range.location + range.length / 2
-            expandedRange = NSRange(
-                location: max(0, center - 1000),
-                length: min(2000, textLength - max(0, center - 1000))
+        let plan = HTMLHighlightPlanBuilder.rangePlan(for: textStorage.string, requestedRange: range)
+        expandedRange = plan.coveredRange
+        apply(plan: plan, to: textStorage, theme: theme)
+    }
+
+    static func apply(plan: HighlightPlan, to textStorage: NSTextStorage, theme: HTMLEditorColorScheme) {
+        guard plan.coveredRange.location != NSNotFound, plan.coveredRange.length > 0 else { return }
+
+        textStorage.removeAttribute(.foregroundColor, range: plan.coveredRange)
+        textStorage.addAttribute(.font, value: theme.font, range: plan.coveredRange)
+        textStorage.addAttribute(.foregroundColor, value: theme.foreground, range: plan.coveredRange)
+        apply(spans: plan.spans, to: textStorage, theme: theme)
+    }
+
+    static func clearTemporaryHighlights(in layoutManager: NSLayoutManager, range: NSRange) {
+        guard range.location != NSNotFound, range.length > 0 else { return }
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+    }
+
+    static func applyTemporary(plan: HighlightPlan, to layoutManager: NSLayoutManager, theme: HTMLEditorColorScheme) {
+        clearTemporaryHighlights(in: layoutManager, range: plan.coveredRange)
+
+        for span in plan.spans {
+            guard span.range.location >= 0 else { continue }
+            layoutManager.addTemporaryAttributes(
+                [.foregroundColor: color(for: span.role, theme: theme)],
+                forCharacterRange: span.range
             )
         }
-        
-        // Optimize line boundary expansion only for small ranges
+    }
+
+    private static func applyBaseAttributes(
+        to attributedString: NSMutableAttributedString,
+        range: NSRange,
+        theme: HTMLEditorColorScheme
+    ) {
+        attributedString.addAttribute(.font, value: theme.font, range: range)
+        attributedString.addAttribute(.foregroundColor, value: theme.foreground, range: range)
+    }
+
+    private static func apply(spans: [HighlightSpan], to attributedString: NSMutableAttributedString, theme: HTMLEditorColorScheme) {
+        for span in spans {
+            guard span.range.location >= 0,
+                  NSMaxRange(span.range) <= attributedString.length else { continue }
+            attributedString.addAttribute(.foregroundColor, value: color(for: span.role, theme: theme), range: span.range)
+        }
+    }
+
+    private static func apply(spans: [HighlightSpan], to textStorage: NSTextStorage, theme: HTMLEditorColorScheme) {
+        for span in spans {
+            guard span.range.location >= 0,
+                  NSMaxRange(span.range) <= textStorage.length else { continue }
+            textStorage.addAttribute(.foregroundColor, value: color(for: span.role, theme: theme), range: span.range)
+        }
+    }
+
+    private static func color(for role: HighlightRole, theme: HTMLEditorColorScheme) -> NSColor {
+        switch role {
+        case .tag:
+            return theme.tag
+        case .attributeName:
+            return theme.attributeName
+        case .attributeValue:
+            return theme.attributeValue
+        }
+    }
+}
+
+private actor HTMLHighlightPlanner {
+    func fullPlan(for html: String) -> HTMLSyntaxHighlighter.HighlightPlan {
+        HTMLHighlightPlanBuilder.fullPlan(for: html)
+    }
+
+    func rangePlan(for text: String, requestedRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
+        HTMLHighlightPlanBuilder.rangePlan(for: text, requestedRange: requestedRange)
+    }
+}
+
+private enum HTMLHighlightPlanBuilder {
+    static func fullPlan(for html: String) -> HTMLSyntaxHighlighter.HighlightPlan {
+        let nsHTML = html as NSString
+        return buildPlan(in: nsHTML, coveredRange: NSRange(location: 0, length: nsHTML.length))
+    }
+
+    static func rangePlan(for text: String, requestedRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
+        let nsText = text as NSString
+        let textLength = nsText.length
+
+        guard textLength > 0,
+              requestedRange.location != NSNotFound,
+              requestedRange.location >= 0,
+              requestedRange.location < textLength else {
+            return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
+        }
+
+        let expandRadius = min(100, textLength / 10)
+        let expandedStart = max(0, requestedRange.location - expandRadius)
+        let expandedEnd = min(textLength, NSMaxRange(requestedRange) + expandRadius)
+        var expandedRange = NSRange(location: expandedStart, length: expandedEnd - expandedStart)
+
+        if expandedRange.length > 2000 {
+            let center = requestedRange.location + requestedRange.length / 2
+            let clampedStart = max(0, center - 1000)
+            expandedRange = NSRange(location: clampedStart, length: min(2000, textLength - clampedStart))
+        }
+
         if expandedRange.length < 1000 && expandedRange.length > 0 {
-            let expandedString = (text as NSString)
-            
-            // Bounds check before calling lineRange
             let startLocation = max(0, min(expandedRange.location, textLength - 1))
-            let endLocation = max(0, min(expandedRange.location + expandedRange.length - 1, textLength - 1))
-            
+            let endLocation = max(0, min(NSMaxRange(expandedRange) - 1, textLength - 1))
+
             if startLocation < textLength && endLocation < textLength {
-                let lineStart = expandedString.lineRange(for: NSRange(location: startLocation, length: 0)).location
-                let lineEnd = expandedString.lineRange(for: NSRange(location: endLocation, length: 0))
-                let lineEndLocation = lineEnd.location + lineEnd.length
-                
-                // Final bounds check
+                let lineStart = nsText.lineRange(for: NSRange(location: startLocation, length: 0)).location
+                let lineEnd = nsText.lineRange(for: NSRange(location: endLocation, length: 0))
+                let lineEndLocation = NSMaxRange(lineEnd)
                 if lineStart <= lineEndLocation && lineEndLocation <= textLength {
                     expandedRange = NSRange(location: lineStart, length: lineEndLocation - lineStart)
                 }
             }
         }
-        
-        // Clear existing attributes in the expanded range
-        textStorage.removeAttribute(.foregroundColor, range: expandedRange)
-        textStorage.addAttribute(.font, value: theme.font, range: expandedRange)
-        textStorage.addAttribute(.foregroundColor, value: theme.foreground, range: expandedRange)
-        
-        // Extract the text portion to highlight
-        let expandedString = (text as NSString)
-        let rangeText = expandedString.substring(with: expandedRange)
-        
-        // Apply syntax highlighting to the expanded range
-        let changes = HighlightChanges()
-        
-        // Find HTML tags in the range
-        let htmlTagRegex = try! Regex(#"</?[a-zA-Z][a-zA-Z0-9]*[^>]*>"#)
-        for match in rangeText.matches(of: htmlTagRegex) {
-            let matchRange = NSRange(match.range, in: rangeText)
-            let matchText = String(rangeText[match.range])
-            
-            // Adjust match range to absolute position
-            let absoluteRange = NSRange(
-                location: expandedRange.location + matchRange.location,
-                length: matchRange.length
-            )
-            
-            // Highlight opening/closing brackets and slash
-            if matchText.hasPrefix("<") {
-                changes.addChange(NSRange(location: absoluteRange.location, length: 1), .foregroundColor, theme.tag)
-            }
-            if matchText.hasPrefix("</") {
-                changes.addChange(NSRange(location: absoluteRange.location + 1, length: 1), .foregroundColor, theme.tag)
-            }
-            if matchText.hasSuffix(">") {
-                changes.addChange(NSRange(location: absoluteRange.location + absoluteRange.length - 1, length: 1), .foregroundColor, theme.tag)
-            }
-            
-            // Extract and highlight tag name
-            let tagStartIndex = matchText.hasPrefix("</") ? 2 : 1
-            if let spaceIndex = matchText.firstIndex(of: " ") ?? matchText.firstIndex(of: ">") {
-                let tagEndIndex = matchText.distance(from: matchText.startIndex, to: spaceIndex)
-                if tagEndIndex > tagStartIndex {
-                    let tagRange = NSRange(
-                        location: absoluteRange.location + tagStartIndex,
-                        length: tagEndIndex - tagStartIndex
-                    )
-                    changes.addChange(tagRange, .foregroundColor, theme.tag)
-                }
-            }
+
+        return buildPlan(in: nsText, coveredRange: expandedRange)
+    }
+
+    private static func buildPlan(in text: NSString, coveredRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
+        guard coveredRange.location != NSNotFound,
+              coveredRange.length > 0,
+              coveredRange.location >= 0,
+              NSMaxRange(coveredRange) <= text.length else {
+            return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
         }
-        
-        // Find attributes in the range
-        let attributeRegex = try! Regex(#"([a-zA-Z-]+)\s*=\s*"([^"]*)"|([a-zA-Z-]+)\s*=\s*'([^']*)'"#)
-        for match in rangeText.matches(of: attributeRegex) {
-            let matchRange = NSRange(match.range, in: rangeText)
-            let matchText = String(rangeText[match.range])
-            
-            // Adjust match range to absolute position
-            let absoluteRange = NSRange(
-                location: expandedRange.location + matchRange.location,
-                length: matchRange.length
-            )
-            
-            // Parse attribute name and value using NSString for better performance
-            let matchNSString = matchText as NSString
-            let equalRange = matchNSString.range(of: "=")
-            if equalRange.location != NSNotFound {
-                let nameRange = NSRange(location: absoluteRange.location, length: equalRange.location)
-                changes.addChange(nameRange, .foregroundColor, theme.attributeName)
-                
-                // Find quoted value using NSString ranges
-                let searchStart = equalRange.location + equalRange.length
-                let remainingRange = NSRange(location: searchStart, length: matchNSString.length - searchStart)
-                
-                let quoteRange = matchNSString.rangeOfCharacter(from: CharacterSet(charactersIn: "\"'"), options: [], range: remainingRange)
-                if quoteRange.location != NSNotFound {
-                    let quoteChar = matchNSString.character(at: quoteRange.location)
-                    let valueStart = quoteRange.location
-                    let searchRange = NSRange(location: valueStart + 1, length: matchNSString.length - valueStart - 1)
-                    let endQuoteRange = matchNSString.rangeOfCharacter(from: CharacterSet(charactersIn: String(UnicodeScalar(quoteChar)!)), options: [], range: searchRange)
-                    
-                    if endQuoteRange.location != NSNotFound {
-                        let valueRange = NSRange(
-                            location: absoluteRange.location + valueStart,
-                            length: endQuoteRange.location - valueStart + 1
-                        )
-                        changes.addChange(valueRange, .foregroundColor, theme.attributeValue)
+
+        var spans: [HTMLSyntaxHighlighter.HighlightSpan] = []
+        spans.reserveCapacity(32)
+
+        let end = NSMaxRange(coveredRange)
+        var index = coveredRange.location
+
+        while index < end {
+            if text.character(at: index) != codeUnit("<") {
+                index += 1
+                continue
+            }
+
+            let tagStart = index
+            var cursor = index + 1
+            var tagNameStart = cursor
+
+            if cursor < end && text.character(at: cursor) == codeUnit("/") {
+                cursor += 1
+                tagNameStart = cursor
+            }
+
+            guard tagNameStart < end, isTagNameCharacter(text.character(at: tagNameStart)) else {
+                index += 1
+                continue
+            }
+
+            spans.append(.init(range: NSRange(location: tagStart, length: 1), role: .tag))
+            if tagStart + 1 < tagNameStart {
+                spans.append(.init(range: NSRange(location: tagStart + 1, length: 1), role: .tag))
+            }
+
+            while cursor < end, isTagNameCharacter(text.character(at: cursor)) {
+                cursor += 1
+            }
+
+            spans.append(.init(range: NSRange(location: tagNameStart, length: cursor - tagNameStart), role: .tag))
+
+            while cursor < end {
+                let current = text.character(at: cursor)
+
+                if isWhitespace(current) {
+                    cursor += 1
+                    continue
+                }
+
+                if current == codeUnit(">") {
+                    spans.append(.init(range: NSRange(location: cursor, length: 1), role: .tag))
+                    cursor += 1
+                    break
+                }
+
+                if current == codeUnit("/") {
+                    spans.append(.init(range: NSRange(location: cursor, length: 1), role: .tag))
+                    cursor += 1
+                    continue
+                }
+
+                let attributeStart = cursor
+                while cursor < end, isAttributeNameCharacter(text.character(at: cursor)) {
+                    cursor += 1
+                }
+
+                if cursor == attributeStart {
+                    cursor += 1
+                    continue
+                }
+
+                spans.append(.init(range: NSRange(location: attributeStart, length: cursor - attributeStart), role: .attributeName))
+
+                while cursor < end, isWhitespace(text.character(at: cursor)) {
+                    cursor += 1
+                }
+
+                guard cursor < end, text.character(at: cursor) == codeUnit("=") else {
+                    continue
+                }
+
+                cursor += 1
+                while cursor < end, isWhitespace(text.character(at: cursor)) {
+                    cursor += 1
+                }
+
+                guard cursor < end else { break }
+
+                let currentValueStarter = text.character(at: cursor)
+                if currentValueStarter == codeUnit("\"") || currentValueStarter == codeUnit("'") {
+                    let quote = currentValueStarter
+                    let valueStart = cursor
+                    cursor += 1
+
+                    while cursor < end, text.character(at: cursor) != quote {
+                        cursor += 1
+                    }
+
+                    if cursor < end, text.character(at: cursor) == quote {
+                        cursor += 1
+                    }
+
+                    spans.append(.init(range: NSRange(location: valueStart, length: cursor - valueStart), role: .attributeValue))
+                } else {
+                    let valueStart = cursor
+                    while cursor < end,
+                          !isWhitespace(text.character(at: cursor)),
+                          text.character(at: cursor) != codeUnit(">") {
+                        cursor += 1
+                    }
+
+                    if cursor > valueStart {
+                        spans.append(.init(range: NSRange(location: valueStart, length: cursor - valueStart), role: .attributeValue))
                     }
                 }
             }
+
+            index = max(cursor, tagStart + 1)
         }
-        
-        // Apply changes to text storage
-        changes.applyToTextStorage(textStorage)
+
+        return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: coveredRange, spans: coalesce(spans))
+    }
+
+    private static func coalesce(_ spans: [HTMLSyntaxHighlighter.HighlightSpan]) -> [HTMLSyntaxHighlighter.HighlightSpan] {
+        let sorted = spans.sorted {
+            if $0.range.location == $1.range.location {
+                return $0.range.length < $1.range.length
+            }
+            return $0.range.location < $1.range.location
+        }
+
+        var merged: [HTMLSyntaxHighlighter.HighlightSpan] = []
+        merged.reserveCapacity(sorted.count)
+
+        for span in sorted {
+            guard span.range.location != NSNotFound, span.range.length > 0 else { continue }
+
+            if let last = merged.last,
+               last.role == span.role,
+               span.range.location <= NSMaxRange(last.range) {
+                let newStart = last.range.location
+                let newEnd = max(NSMaxRange(last.range), NSMaxRange(span.range))
+                merged[merged.count - 1] = .init(range: NSRange(location: newStart, length: newEnd - newStart), role: last.role)
+            } else {
+                merged.append(span)
+            }
+        }
+
+        return merged
+    }
+
+    private static func isTagNameCharacter(_ value: unichar) -> Bool {
+        isASCIIAlpha(value) || isASCIIDigit(value)
+    }
+
+    private static func isAttributeNameCharacter(_ value: unichar) -> Bool {
+        isTagNameCharacter(value) || value == codeUnit("-") || value == codeUnit(":") || value == codeUnit("_")
+    }
+
+    private static func isWhitespace(_ value: unichar) -> Bool {
+        value == 9 || value == 10 || value == 13 || value == 32
+    }
+
+    private static func isASCIIAlpha(_ value: unichar) -> Bool {
+        (65...90).contains(Int(value)) || (97...122).contains(Int(value))
+    }
+
+    private static func isASCIIDigit(_ value: unichar) -> Bool {
+        (48...57).contains(Int(value))
+    }
+
+    private static func codeUnit(_ character: Character) -> unichar {
+        String(character).utf16.first!
     }
 }
 
 extension NSRange {
     func toOptional() -> NSRange? {
-        return self.location != NSNotFound ? self : nil
-    }
-}
-
-// Optimized highlight changes collection
-final class HighlightChanges: @unchecked Sendable {
-    private var changes: [(range: NSRange, attributeKey: NSAttributedString.Key, color: NSColor)] = []
-    private let lock = NSLock()
-    
-    func addChange(_ range: NSRange, _ attributeKey: NSAttributedString.Key, _ color: NSColor) {
-        lock.lock()
-        changes.append((range: range, attributeKey: attributeKey, color: color))
-        lock.unlock()
-    }
-    
-    func applyToAttributedString(_ attributedString: NSMutableAttributedString) {
-        lock.lock()
-        let localChanges = changes
-        lock.unlock()
-        
-        // Sort changes by location to apply them efficiently
-        let sortedChanges = localChanges.sorted { $0.range.location < $1.range.location }
-        
-        for change in sortedChanges {
-            // Bounds check to prevent crashes
-            if change.range.location >= 0 && 
-               change.range.location + change.range.length <= attributedString.length {
-                attributedString.addAttribute(change.attributeKey, value: change.color, range: change.range)
-            }
-        }
-    }
-    
-    func applyToTextStorage(_ textStorage: NSTextStorage) {
-        lock.lock()
-        let localChanges = changes
-        lock.unlock()
-        
-        // Sort changes by location to apply them efficiently
-        let sortedChanges = localChanges.sorted { $0.range.location < $1.range.location }
-        
-        for change in sortedChanges {
-            // Bounds check to prevent crashes
-            if change.range.location >= 0 && 
-               change.range.location + change.range.length <= textStorage.length {
-                textStorage.addAttribute(change.attributeKey, value: change.color, range: change.range)
-            }
-        }
+        location != NSNotFound ? self : nil
     }
 }
 

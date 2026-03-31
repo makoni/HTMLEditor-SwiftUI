@@ -114,6 +114,116 @@ import AppKit
     #expect(expandedRange.length == 0)
 }
 
+@Test func testUTF16RangeHandling() async throws {
+    let theme = HTMLEditorColorScheme(
+        foreground: .black,
+        background: .white,
+        tag: .red,
+        attributeName: .blue,
+        attributeValue: .green,
+        font: .systemFont(ofSize: 14)
+    )
+
+    let html = #"<div title="emoji 😀">Привет 😀</div>"#
+    let textStorage = NSTextStorage(string: html)
+    var expandedRange = NSRange(location: 0, length: 0)
+
+    let utf16Location = (html as NSString).range(of: "😀").location
+    HTMLSyntaxHighlighter.highlightRange(
+        in: textStorage,
+        range: NSRange(location: utf16Location, length: 2),
+        theme: theme,
+        expandedRange: &expandedRange
+    )
+
+    #expect(expandedRange.location != NSNotFound)
+    #expect(NSMaxRange(expandedRange) <= textStorage.length)
+}
+
+@Test func testPartialAnchorTagDoesNotBreakHighlighting() async throws {
+    let theme = HTMLEditorColorScheme(
+        foreground: .black,
+        background: .white,
+        tag: .red,
+        attributeName: .blue,
+        attributeValue: .green,
+        font: .systemFont(ofSize: 14)
+    )
+
+    let html = "<div>prefix <a href suffix</div>"
+    let result = HTMLSyntaxHighlighter.highlight(html: html, theme: theme)
+
+    #expect(result.string == html)
+
+    let textStorage = NSTextStorage(string: html)
+    var expandedRange = NSRange(location: 0, length: 0)
+    let location = (html as NSString).range(of: "<a href").location
+    HTMLSyntaxHighlighter.highlightRange(
+        in: textStorage,
+        range: NSRange(location: location, length: 7),
+        theme: theme,
+        expandedRange: &expandedRange
+    )
+
+    #expect(expandedRange.location != NSNotFound)
+    #expect(NSMaxRange(expandedRange) <= textStorage.length)
+}
+
+@Test func testUnquotedAttributeValueHighlighting() async throws {
+    let theme = HTMLEditorColorScheme(
+        foreground: .black,
+        background: .white,
+        tag: .red,
+        attributeName: .blue,
+        attributeValue: .green,
+        font: .systemFont(ofSize: 14)
+    )
+
+    let html = "<a href=https://example.com target=_blank>link</a>"
+    let result = HTMLSyntaxHighlighter.highlight(html: html, theme: theme)
+
+    #expect(result.string == html)
+
+    let hrefRange = (html as NSString).range(of: "href")
+    let valueRange = (html as NSString).range(of: "https://example.com")
+
+    let hrefColor = result.attribute(.foregroundColor, at: hrefRange.location, effectiveRange: nil) as? NSColor
+    let valueColor = result.attribute(.foregroundColor, at: valueRange.location, effectiveRange: nil) as? NSColor
+
+    #expect(hrefColor == theme.attributeName)
+    #expect(valueColor == theme.attributeValue)
+}
+
+@Test func testLargeDocumentMidEditRangeHighlighting() async throws {
+    let theme = HTMLEditorColorScheme(
+        foreground: .black,
+        background: .white,
+        tag: .red,
+        attributeName: .blue,
+        attributeValue: .green,
+        font: .systemFont(ofSize: 14)
+    )
+
+    let repeated = String(repeating: "<p>section</p>\n", count: 2000)
+    let insertion = "<a href"
+    let largeHTML = repeated + insertion + repeated
+
+    let textStorage = NSTextStorage(string: largeHTML)
+    var expandedRange = NSRange(location: 0, length: 0)
+    let insertionRange = (largeHTML as NSString).range(of: insertion)
+
+    HTMLSyntaxHighlighter.highlightRange(
+        in: textStorage,
+        range: insertionRange,
+        theme: theme,
+        expandedRange: &expandedRange
+    )
+
+    #expect(expandedRange.location != NSNotFound)
+    #expect(NSMaxRange(expandedRange) <= textStorage.length)
+    #expect(expandedRange.length <= 2000)
+}
+
 @Test func testLargeContentHandling() async throws {
     // Test that large content doesn't crash the system
     let largeHTML = String(repeating: "<div class=\"test\">Content</div>\n", count: 1000)
