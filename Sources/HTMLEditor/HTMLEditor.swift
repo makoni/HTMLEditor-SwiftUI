@@ -109,7 +109,7 @@ public struct HTMLEditor: NSViewRepresentable {
 		}
 	}
 
-	public class Coordinator: NSObject, NSTextViewDelegate {
+	public class Coordinator: NSObject, NSTextViewDelegate, @unchecked Sendable {
 		var parent: HTMLEditor
 		// Removed range-based highlighting, now using visible area only
 		private var isUpdatingFromHighlighting = false
@@ -160,38 +160,29 @@ public struct HTMLEditor: NSViewRepresentable {
 			// Save cursor position and scroll state for full replacement
 			let selectedRange = textView.selectedRange()
 			let visibleRect = scrollView.documentVisibleRect
+			let highlighted = HTMLSyntaxHighlighter.highlight(html: html, theme: theme)
 			
-			// Perform highlighting on background queue
-			DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-				let highlighted = HTMLSyntaxHighlighter.highlight(html: html, theme: theme)
-				
-				Task { @MainActor [weak self] in
-					guard let self = self else { return }
-					
-					// Prevent recursive updates
-					self.isUpdatingFromHighlighting = true
-					
-					// Apply full highlighting replacement
-					textView.textStorage?.beginEditing()
-					textView.textStorage?.setAttributedString(highlighted)
-					textView.textStorage?.endEditing()
-					
-					// Restore selection with bounds checking
-					let maxLocation = textView.string.count
-					let clampedLocation = min(selectedRange.location, maxLocation)
-					let clampedLength = min(selectedRange.length, maxLocation - clampedLocation)
-					textView.setSelectedRange(NSRange(location: clampedLocation, length: clampedLength))
-					
-					// Restore scroll position without animation
-					CATransaction.begin()
-					CATransaction.setDisableActions(true)
-					scrollView.contentView.setBoundsOrigin(visibleRect.origin)
-					scrollView.reflectScrolledClipView(scrollView.contentView)
-					CATransaction.commit()
-					
-					self.isUpdatingFromHighlighting = false
-				}
-			}
+			// Prevent recursive updates
+			isUpdatingFromHighlighting = true
+			
+			textView.textStorage?.beginEditing()
+			textView.textStorage?.setAttributedString(highlighted)
+			textView.textStorage?.endEditing()
+			
+			// Restore selection with bounds checking
+			let maxLocation = textView.string.count
+			let clampedLocation = min(selectedRange.location, maxLocation)
+			let clampedLength = min(selectedRange.length, maxLocation - clampedLocation)
+			textView.setSelectedRange(NSRange(location: clampedLocation, length: clampedLength))
+			
+			// Restore scroll position without animation
+			CATransaction.begin()
+			CATransaction.setDisableActions(true)
+			scrollView.contentView.setBoundsOrigin(visibleRect.origin)
+			scrollView.reflectScrolledClipView(scrollView.contentView)
+			CATransaction.commit()
+			
+			isUpdatingFromHighlighting = false
 		}
 
 		// Appearance change handler
@@ -203,9 +194,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			textView.textColor = currentTheme.foreground
 			
 			// Apply highlighting immediately for appearance changes
-			Task { @MainActor in
-				performFullHighlighting(html: parent.html, theme: currentTheme, textView: textView)
-			}
+			performFullHighlighting(html: parent.html, theme: currentTheme, textView: textView)
 		}
 		
 		// MARK: - Scroll Detection
@@ -217,6 +206,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			scheduleVisibleRangeHighlighting(textView: textView, scrollView: scrollView)
 		}
 		
+		@MainActor
 		private func scheduleVisibleRangeHighlighting(textView: NSTextView, scrollView: NSScrollView, forceHighlight: Bool = false) {
 			visibleHighlightingTimer?.invalidate()
 			
@@ -224,8 +214,8 @@ public struct HTMLEditor: NSViewRepresentable {
 				guard let self = self,
 					  let textView = textView,
 					  let scrollView = scrollView else { return }
-				
-				Task { @MainActor in
+
+				MainActor.assumeIsolated {
 					self.highlightVisibleRange(textView: textView, scrollView: scrollView, forceHighlight: forceHighlight)
 				}
 			}
@@ -289,27 +279,24 @@ public struct HTMLEditor: NSViewRepresentable {
 			}
 		}
 		
+		@MainActor
 		private func performVisibleRangeHighlighting(range: NSRange, theme: HTMLEditorColorScheme, textStorage: NSTextStorage) {
-			DispatchQueue.global(qos: .userInitiated).async {
-				Task { @MainActor in
-					// Prevent recursive updates during visible range highlighting
-					self.isUpdatingFromHighlighting = true
-					
-					textStorage.beginEditing()
-					
-					var expandedRange = NSRange()
-					HTMLSyntaxHighlighter.highlightRange(
-						in: textStorage,
-						range: range,
-						theme: theme,
-						expandedRange: &expandedRange
-					)
-					
-					textStorage.endEditing()
-					
-					self.isUpdatingFromHighlighting = false
-				}
-			}
+			// Prevent recursive updates during visible range highlighting
+			isUpdatingFromHighlighting = true
+			
+			textStorage.beginEditing()
+			
+			var expandedRange = NSRange()
+			HTMLSyntaxHighlighter.highlightRange(
+				in: textStorage,
+				range: range,
+				theme: theme,
+				expandedRange: &expandedRange
+			)
+			
+			textStorage.endEditing()
+			
+			isUpdatingFromHighlighting = false
 		}
 		
 		deinit {

@@ -7,7 +7,6 @@
 - Run the full package test suite with `swift test`.
 - Run a single test with `swift test --filter 'testEmptyHTML'`. Replace the filter with any `@Test` name from `Tests/HTMLEditor-SwiftUITests/HTMLEditor_SwiftUITests.swift`.
 - The demo app is a separate macOS Xcode project. Build it with `xcodebuild -project HTMLEditorDemoApp/HTMLEditor-Demo.xcodeproj -scheme HTMLEditor-Demo -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO`.
-- At the current baseline, `swift build` and `swift test` fail under Swift 6 concurrency checking because `Sources/HTMLEditor/HTMLEditor.swift` captures non-Sendable AppKit state in `Task { @MainActor ... }` closures. Treat that as existing debt unless your change is specifically addressing it.
 
 ## High-level architecture
 
