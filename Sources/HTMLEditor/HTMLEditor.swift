@@ -54,8 +54,12 @@ public struct HTMLEditor: NSViewRepresentable {
 		}
 
 		textView.string = html
-		if html.utf16.count <= HTMLSyntaxHighlighter.maxHighlightLength {
-			textView.textStorage?.setAttributedString(HTMLSyntaxHighlighter.highlight(html: html, theme: currentTheme))
+		HTMLSyntaxHighlighter.applyThemeBase(to: textView, theme: currentTheme)
+		if html.utf16.count <= HTMLSyntaxHighlighter.maxHighlightLength,
+		   let layoutManager = textView.layoutManager {
+			let plan = HTMLSyntaxHighlighter.highlight(html: html, theme: currentTheme)
+			textView.textStorage?.setAttributedString(plan)
+			HTMLSyntaxHighlighter.clearTemporaryHighlights(in: layoutManager, range: NSRange(location: 0, length: html.utf16.count))
 		}
 		textView.coordinator = context.coordinator
 
@@ -218,15 +222,16 @@ public struct HTMLEditor: NSViewRepresentable {
 						  self.documentVersion == currentVersion else { return }
 					self.cachedFullHighlightPlan = plan
 					self.cachedFullHighlightVersion = currentVersion
-					let highlighted = HTMLSyntaxHighlighter.attributedString(html: html, theme: theme, plan: plan)
-					self.applyFullHighlightResult(highlighted, to: textView, in: scrollView)
+					self.applyFullHighlightPlan(plan, html: html, theme: theme, to: textView, in: scrollView)
 				}
 			}
 		}
 
 		@MainActor
-		private func applyFullHighlightResult(
-			_ highlighted: NSAttributedString,
+		private func applyFullHighlightPlan(
+			_ plan: HTMLSyntaxHighlighter.HighlightPlan?,
+			html: String,
+			theme: HTMLEditorColorScheme,
 			to textView: NSTextView,
 			in scrollView: NSScrollView
 		) {
@@ -235,10 +240,18 @@ public struct HTMLEditor: NSViewRepresentable {
 
 			// Prevent recursive updates
 			isUpdatingFromHighlighting = true
-			
-			textView.textStorage?.beginEditing()
-			textView.textStorage?.setAttributedString(highlighted)
-			textView.textStorage?.endEditing()
+
+			if textView.string != html {
+				textView.string = html
+			}
+			HTMLSyntaxHighlighter.applyThemeBase(to: textView, theme: theme)
+			if let layoutManager = textView.layoutManager {
+				let fullRange = NSRange(location: 0, length: textView.string.utf16.count)
+				HTMLSyntaxHighlighter.clearTemporaryHighlights(in: layoutManager, range: fullRange)
+				if let plan {
+					HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: layoutManager, theme: theme)
+				}
+			}
 			
 			// Restore selection with bounds checking
 			let maxLocation = textView.string.utf16.count
@@ -297,8 +310,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			if let cachedFullHighlightPlan,
 			   cachedFullHighlightVersion == documentVersion,
 			   let scrollView = textView.enclosingScrollView {
-				let highlighted = HTMLSyntaxHighlighter.attributedString(html: parent.html, theme: currentTheme, plan: cachedFullHighlightPlan)
-				applyFullHighlightResult(highlighted, to: textView, in: scrollView)
+				applyFullHighlightPlan(cachedFullHighlightPlan, html: parent.html, theme: currentTheme, to: textView, in: scrollView)
 			} else {
 				// Apply highlighting immediately for appearance changes
 				performFullHighlighting(html: parent.html, theme: currentTheme, textView: textView)

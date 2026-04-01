@@ -97,6 +97,20 @@ public struct HTMLSyntaxHighlighter {
         }
     }
 
+    @MainActor
+    static func applyThemeBase(to textView: NSTextView, theme: HTMLEditorColorScheme) {
+        let fullRange = NSRange(location: 0, length: textView.string.utf16.count)
+        textView.font = theme.font
+        textView.textColor = theme.foreground
+        textView.backgroundColor = theme.background
+
+        guard let textStorage = textView.textStorage else { return }
+        textStorage.beginEditing()
+        textStorage.addAttribute(.font, value: theme.font, range: fullRange)
+        textStorage.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
+        textStorage.endEditing()
+    }
+
     private static func applyBaseAttributes(
         to attributedString: NSMutableAttributedString,
         range: NSRange,
