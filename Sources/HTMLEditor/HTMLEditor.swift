@@ -111,6 +111,13 @@ public struct HTMLEditor: NSViewRepresentable {
 	}
 
 	public class Coordinator: NSObject, NSTextViewDelegate, @unchecked Sendable {
+		private struct CachedRangePlan {
+			let range: NSRange
+			let version: Int
+			let textLength: Int
+			let plan: HTMLSyntaxHighlighter.HighlightPlan
+		}
+
 		var parent: HTMLEditor
 		// Removed range-based highlighting, now using visible area only
 		private var isUpdatingFromHighlighting = false
@@ -123,6 +130,7 @@ public struct HTMLEditor: NSViewRepresentable {
 		private var pendingLocalBindingSyncHTML: String?
 		private var cachedFullHighlightPlan: HTMLSyntaxHighlighter.HighlightPlan?
 		private var cachedFullHighlightVersion: Int?
+		private var cachedRangePlans: [CachedRangePlan] = []
 		private var lastVisibleRange = NSRange(location: 0, length: 0)
 		var highlightedRanges: [NSRange] = []
 
@@ -141,6 +149,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			highlightedRanges.append(NSRange(location: 0, length: html.utf16.count))
 			cachedFullHighlightPlan = nil
 			cachedFullHighlightVersion = nil
+			cachedRangePlans.removeAll()
 			visibleHighlightTask?.cancel()
 			prewarmTask?.cancel()
 			performFullHighlighting(html: html, theme: theme, textView: textView)
@@ -176,6 +185,7 @@ public struct HTMLEditor: NSViewRepresentable {
 				documentVersion &+= 1
 				cachedFullHighlightPlan = nil
 				cachedFullHighlightVersion = nil
+				cachedRangePlans.removeAll()
 				fullHighlightTask?.cancel()
 				prewarmTask?.cancel()
 				
@@ -393,7 +403,24 @@ public struct HTMLEditor: NSViewRepresentable {
 				let expandedRange = NSRange(location: expandedStart, length: expandedEnd - expandedStart)
 				let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
 				let textSnapshot = textStorage.string
+				let textLength = textStorage.length
 				let currentVersion = documentVersion
+
+				if let cachedPlan = cachedPlanCovering(expandedRange, version: currentVersion, textLength: textLength) {
+					performVisibleRangeHighlighting(plan: cachedPlan, theme: currentTheme, textStorage: textStorage)
+					recordHighlightedRange(cachedPlan.coveredRange)
+					if !forceHighlight {
+						scheduleViewportPrewarm(
+							around: visibleRange,
+							textSnapshot: textSnapshot,
+							theme: currentTheme,
+							version: currentVersion,
+							textLength: textLength,
+							textView: textView
+						)
+					}
+					return
+				}
 
 				visibleHighlightTask?.cancel()
 				visibleHighlightTask = Task { [weak self, weak textView] in
@@ -406,6 +433,7 @@ public struct HTMLEditor: NSViewRepresentable {
 							  let currentTextStorage = textView.textStorage,
 							  self.documentVersion == currentVersion,
 							  currentTextStorage.string == textSnapshot else { return }
+						self.storeCachedPlan(plan, version: currentVersion, textLength: textLength)
 						self.performVisibleRangeHighlighting(plan: plan, theme: currentTheme, textStorage: currentTextStorage)
 						self.recordHighlightedRange(plan.coveredRange)
 						if !forceHighlight {
@@ -414,6 +442,7 @@ public struct HTMLEditor: NSViewRepresentable {
 								textSnapshot: textSnapshot,
 								theme: currentTheme,
 								version: currentVersion,
+								textLength: textLength,
 								textView: textView
 							)
 						}
@@ -475,6 +504,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			textSnapshot: String,
 			theme: HTMLEditorColorScheme,
 			version: Int,
+			textLength: Int,
 			textView: NSTextView
 		) {
 			prewarmTask?.cancel()
@@ -512,10 +542,50 @@ public struct HTMLEditor: NSViewRepresentable {
 							  self.documentVersion == version,
 							  currentTextStorage.string == textSnapshot,
 							  self.rangeNeedsHighlighting(plan.coveredRange) else { return }
+						self.storeCachedPlan(plan, version: version, textLength: textLength)
 						self.performVisibleRangeHighlighting(plan: plan, theme: theme, textStorage: currentTextStorage)
 						self.recordHighlightedRange(plan.coveredRange)
 					}
 				}
+			}
+		}
+
+		@MainActor
+		private func cachedPlanCovering(_ range: NSRange, version: Int, textLength: Int) -> HTMLSyntaxHighlighter.HighlightPlan? {
+			guard let index = cachedRangePlans.firstIndex(where: {
+				$0.version == version &&
+				$0.textLength == textLength &&
+				NSIntersectionRange(range, $0.range).length > Int(Double(range.length) * 0.8)
+			}) else {
+				return nil
+			}
+
+			let hit = cachedRangePlans.remove(at: index)
+			cachedRangePlans.append(hit)
+			return hit.plan
+		}
+
+		@MainActor
+		private func storeCachedPlan(_ plan: HTMLSyntaxHighlighter.HighlightPlan, version: Int, textLength: Int) {
+			guard plan.coveredRange.location != NSNotFound, plan.coveredRange.length > 0 else { return }
+
+			cachedRangePlans.removeAll {
+				$0.version == version &&
+				$0.textLength == textLength &&
+				NSIntersectionRange($0.range, plan.coveredRange).length > 0
+			}
+
+			cachedRangePlans.append(
+				CachedRangePlan(
+					range: plan.coveredRange,
+					version: version,
+					textLength: textLength,
+					plan: plan
+				)
+			)
+
+			if cachedRangePlans.count > 16 {
+				cachedRangePlans.removeFirst(cachedRangePlans.count - 16)
 			}
 		}
 
