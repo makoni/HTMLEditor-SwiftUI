@@ -118,6 +118,11 @@ public struct HTMLEditor: NSViewRepresentable {
 			let plan: HTMLSyntaxHighlighter.HighlightPlan
 		}
 
+		private struct PendingEdit {
+			let affectedRange: NSRange
+			let replacementUTF16Length: Int
+		}
+
 		var parent: HTMLEditor
 		// Removed range-based highlighting, now using visible area only
 		private var isUpdatingFromHighlighting = false
@@ -127,7 +132,9 @@ public struct HTMLEditor: NSViewRepresentable {
 		private var prewarmTask: Task<Void, Never>?
 		private var fullHighlightTask: Task<Void, Never>?
 		private var documentVersion: Int = 0
+		private let plannerDocumentID = UUID()
 		private var pendingLocalBindingSyncHTML: String?
+		private var pendingEdit: PendingEdit?
 		private var cachedFullHighlightPlan: HTMLSyntaxHighlighter.HighlightPlan?
 		private var cachedFullHighlightVersion: Int?
 		private var cachedRangePlans: [CachedRangePlan] = []
@@ -152,6 +159,9 @@ public struct HTMLEditor: NSViewRepresentable {
 			cachedRangePlans.removeAll()
 			visibleHighlightTask?.cancel()
 			prewarmTask?.cancel()
+			Task {
+				await HTMLSyntaxHighlighter.clearPlannerCache(documentID: plannerDocumentID)
+			}
 			performFullHighlighting(html: html, theme: theme, textView: textView)
 		}
 
@@ -170,6 +180,18 @@ public struct HTMLEditor: NSViewRepresentable {
 			return currentText != incomingHTML
 		}
 
+		public func textView(
+			_ textView: NSTextView,
+			shouldChangeTextIn affectedCharRange: NSRange,
+			replacementString: String?
+		) -> Bool {
+			pendingEdit = PendingEdit(
+				affectedRange: affectedCharRange,
+				replacementUTF16Length: replacementString?.utf16.count ?? 0
+			)
+			return true
+		}
+
 		public func textDidChange(_ notification: Notification) {
 			guard !isUpdatingFromHighlighting,
 				  let textView = notification.object as? NSTextView else { return }
@@ -185,14 +207,38 @@ public struct HTMLEditor: NSViewRepresentable {
 				documentVersion &+= 1
 				cachedFullHighlightPlan = nil
 				cachedFullHighlightVersion = nil
-				cachedRangePlans.removeAll()
 				fullHighlightTask?.cancel()
 				prewarmTask?.cancel()
+
+				if let pendingEdit {
+					invalidateCaches(for: pendingEdit, newTextLength: newLength)
+					Task {
+						await HTMLSyntaxHighlighter.invalidatePlannerCache(
+							documentID: self.plannerDocumentID,
+							editRange: pendingEdit.affectedRange,
+							replacementUTF16Length: pendingEdit.replacementUTF16Length,
+							newTextLength: newLength
+						)
+					}
+					self.pendingEdit = nil
+				} else {
+					cachedRangePlans.removeAll()
+					highlightedRanges.removeAll()
+					lastVisibleRange = NSRange(location: 0, length: 0)
+					Task {
+						await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
+					}
+				}
 				
 				// For major changes (paste, large inserts), clear all highlighted ranges
 				let isMajorChange = abs(newLength - oldLength) > 50 || oldLength == 0
 				if isMajorChange {
+					cachedRangePlans.removeAll()
 					highlightedRanges.removeAll()
+					lastVisibleRange = NSRange(location: 0, length: 0)
+					Task {
+						await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
+					}
 				}
 				
 				// Always highlight visible area on text changes (force highlighting for edits)
@@ -223,7 +269,7 @@ public struct HTMLEditor: NSViewRepresentable {
 			
 			fullHighlightTask = Task { [weak self, weak textView, weak scrollView] in
 				guard let self else { return }
-				let plan = await HTMLSyntaxHighlighter.plannedFullHighlight(html: html)
+				let plan = await HTMLSyntaxHighlighter.plannedFullHighlight(documentID: self.plannerDocumentID, html: html)
 				guard !Task.isCancelled else { return }
 
 				await MainActor.run {
@@ -425,7 +471,11 @@ public struct HTMLEditor: NSViewRepresentable {
 				visibleHighlightTask?.cancel()
 				visibleHighlightTask = Task { [weak self, weak textView] in
 					guard let self else { return }
-					let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(text: textSnapshot, requestedRange: expandedRange)
+					let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
+						documentID: self.plannerDocumentID,
+						text: textSnapshot,
+						requestedRange: expandedRange
+					)
 					guard !Task.isCancelled else { return }
 
 					await MainActor.run {
@@ -533,7 +583,11 @@ public struct HTMLEditor: NSViewRepresentable {
 
 				for candidate in candidates {
 					guard !Task.isCancelled else { return }
-					let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(text: textSnapshot, requestedRange: candidate)
+					let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
+						documentID: self.plannerDocumentID,
+						text: textSnapshot,
+						requestedRange: candidate
+					)
 					guard !Task.isCancelled else { return }
 
 					await MainActor.run {
@@ -586,6 +640,29 @@ public struct HTMLEditor: NSViewRepresentable {
 
 			if cachedRangePlans.count > 16 {
 				cachedRangePlans.removeFirst(cachedRangePlans.count - 16)
+			}
+		}
+
+		@MainActor
+		private func invalidateCaches(for edit: PendingEdit, newTextLength: Int) {
+			let invalidationStart = max(0, edit.affectedRange.location - 256)
+
+			cachedRangePlans.removeAll { cachedPlan in
+				NSMaxRange(cachedPlan.range) > invalidationStart
+			}
+
+			highlightedRanges.removeAll { highlightedRange in
+				NSMaxRange(highlightedRange) > invalidationStart
+			}
+
+			if lastVisibleRange.location >= invalidationStart || NSMaxRange(lastVisibleRange) > invalidationStart {
+				lastVisibleRange = NSRange(location: 0, length: 0)
+			}
+
+			if newTextLength <= invalidationStart {
+				cachedRangePlans.removeAll()
+				highlightedRanges.removeAll()
+				lastVisibleRange = NSRange(location: 0, length: 0)
 			}
 		}
 

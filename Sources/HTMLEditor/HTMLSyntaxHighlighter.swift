@@ -22,6 +22,7 @@ public struct HTMLSyntaxHighlighter {
     }
 
     private static let planner = HTMLHighlightPlanner()
+    private static let sharedPlannerDocumentID = UUID()
 
     public static func highlight(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
         if html.utf16.count > maxHighlightLength {
@@ -33,12 +34,42 @@ public struct HTMLSyntaxHighlighter {
     }
 
     static func plannedFullHighlight(html: String) async -> HighlightPlan? {
+        await plannedFullHighlight(documentID: sharedPlannerDocumentID, html: html)
+    }
+
+    static func plannedFullHighlight(documentID: UUID, html: String) async -> HighlightPlan? {
         guard html.utf16.count <= maxHighlightLength else { return nil }
-        return await planner.fullPlan(for: html)
+        return await planner.fullPlan(for: html, documentID: documentID)
     }
 
     static func plannedRangeHighlight(text: String, requestedRange: NSRange) async -> HighlightPlan {
-        await planner.rangePlan(for: text, requestedRange: requestedRange)
+        await plannedRangeHighlight(documentID: sharedPlannerDocumentID, text: text, requestedRange: requestedRange)
+    }
+
+    static func plannedRangeHighlight(documentID: UUID, text: String, requestedRange: NSRange) async -> HighlightPlan {
+        await planner.rangePlan(for: text, requestedRange: requestedRange, documentID: documentID)
+    }
+
+    static func invalidatePlannerCache(
+        documentID: UUID,
+        editRange: NSRange,
+        replacementUTF16Length: Int,
+        newTextLength: Int
+    ) async {
+        await planner.invalidate(
+            documentID: documentID,
+            editRange: editRange,
+            replacementUTF16Length: replacementUTF16Length,
+            newTextLength: newTextLength
+        )
+    }
+
+    static func clearPlannerCache(documentID: UUID) async {
+        await planner.clear(documentID: documentID)
+    }
+
+    static func debugPlannerCacheCounts(documentID: UUID) async -> (plans: Int, chunks: Int) {
+        await planner.debugCounts(documentID: documentID)
     }
 
     static func attributedString(html: String, theme: HTMLEditorColorScheme, plan: HighlightPlan?) -> NSAttributedString {
@@ -148,17 +179,243 @@ public struct HTMLSyntaxHighlighter {
     }
 }
 
+private enum HTMLHighlightScannerState: Hashable, Sendable {
+    case text
+    case afterTagOpen
+    case tagName
+    case insideTag
+    case attributeName
+    case afterAttributeName
+    case beforeAttributeValue
+    case quotedAttributeValue(unichar)
+    case unquotedAttributeValue
+}
+
+private struct HTMLHighlightChunkResult: Sendable {
+    let endState: HTMLHighlightScannerState
+    let spans: [HTMLSyntaxHighlighter.HighlightSpan]
+}
+
 private actor HTMLHighlightPlanner {
-    func fullPlan(for html: String) -> HTMLSyntaxHighlighter.HighlightPlan {
-        HTMLHighlightPlanBuilder.fullPlan(for: html)
+    private struct CachedPlanEntry: Sendable {
+        let key: PlannerCacheKey
+        let plan: HTMLSyntaxHighlighter.HighlightPlan
     }
 
-    func rangePlan(for text: String, requestedRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
-        HTMLHighlightPlanBuilder.rangePlan(for: text, requestedRange: requestedRange)
+    private struct CachedChunkEntry: Sendable {
+        let key: PlannerChunkCacheKey
+        let result: HTMLHighlightChunkResult
+    }
+
+    private struct PlannerCacheKey: Hashable, Sendable {
+        let documentID: UUID
+        let textLength: Int
+        let range: NSRange
+        let fingerprint: Int
+    }
+
+    private struct PlannerChunkCacheKey: Hashable, Sendable {
+        let documentID: UUID
+        let textLength: Int
+        let range: NSRange
+        let fingerprint: Int
+        let inputState: HTMLHighlightScannerState
+    }
+
+    private var cachedPlans: [CachedPlanEntry] = []
+    private var cachedChunks: [CachedChunkEntry] = []
+
+    func fullPlan(for html: String, documentID: UUID) -> HTMLSyntaxHighlighter.HighlightPlan {
+        let fullRange = NSRange(location: 0, length: (html as NSString).length)
+        return cachedPlan(for: html, range: fullRange, documentID: documentID) {
+            buildPlan(for: html, coveredRange: fullRange, documentID: documentID)
+        }
+    }
+
+    func rangePlan(for text: String, requestedRange: NSRange, documentID: UUID) -> HTMLSyntaxHighlighter.HighlightPlan {
+        let normalizedRange = HTMLHighlightPlanBuilder.normalizedRange(for: text, requestedRange: requestedRange)
+        guard normalizedRange.location != NSNotFound, normalizedRange.length > 0 else {
+            return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
+        }
+
+        return cachedPlan(for: text, range: normalizedRange, documentID: documentID) {
+            buildPlan(for: text, coveredRange: normalizedRange, documentID: documentID)
+        }
+    }
+
+    func invalidate(
+        documentID: UUID,
+        editRange: NSRange,
+        replacementUTF16Length: Int,
+        newTextLength: Int
+    ) {
+        let planInvalidationStart = max(0, editRange.location - 256)
+        let chunkInvalidationStart = HTMLHighlightPlanBuilder.chunkStart(for: planInvalidationStart)
+        let planInvalidationEnd = max(planInvalidationStart, editRange.location + max(editRange.length, replacementUTF16Length) + 256)
+        let chunkInvalidationEnd = HTMLHighlightPlanBuilder.chunkEnd(forExclusiveLocation: planInvalidationEnd)
+        let lengthDelta = replacementUTF16Length - editRange.length
+
+        if abs(lengthDelta) > HTMLHighlightPlanBuilder.plannerChunkSize * 8 {
+            clear(documentID: documentID)
+            return
+        }
+
+        if lengthDelta == 0 {
+            let planInvalidationRange = NSRange(location: planInvalidationStart, length: max(0, planInvalidationEnd - planInvalidationStart))
+            let chunkInvalidationRange = NSRange(location: chunkInvalidationStart, length: max(0, chunkInvalidationEnd - chunkInvalidationStart))
+
+            cachedPlans.removeAll {
+                $0.key.documentID == documentID &&
+                NSIntersectionRange($0.key.range, planInvalidationRange).length > 0
+            }
+
+            cachedChunks.removeAll {
+                $0.key.documentID == documentID &&
+                NSIntersectionRange($0.key.range, chunkInvalidationRange).length > 0
+            }
+        } else {
+            cachedPlans.removeAll {
+                $0.key.documentID == documentID
+            }
+
+            cachedChunks.removeAll {
+                $0.key.documentID == documentID &&
+                NSMaxRange($0.key.range) > chunkInvalidationStart
+            }
+        }
+
+        if newTextLength <= planInvalidationStart {
+            clear(documentID: documentID)
+        }
+    }
+
+    func clear(documentID: UUID) {
+        cachedPlans.removeAll { $0.key.documentID == documentID }
+        cachedChunks.removeAll { $0.key.documentID == documentID }
+    }
+
+    func debugCounts(documentID: UUID) -> (plans: Int, chunks: Int) {
+        (
+            plans: cachedPlans.filter { $0.key.documentID == documentID }.count,
+            chunks: cachedChunks.filter { $0.key.documentID == documentID }.count
+        )
+    }
+
+    private func cachedPlan(
+        for text: String,
+        range: NSRange,
+        documentID: UUID,
+        build: () -> HTMLSyntaxHighlighter.HighlightPlan
+    ) -> HTMLSyntaxHighlighter.HighlightPlan {
+        let key = PlannerCacheKey(
+            documentID: documentID,
+            textLength: text.utf16.count,
+            range: range,
+            fingerprint: textFingerprint(text, range: range)
+        )
+
+        if let exactIndex = cachedPlans.firstIndex(where: { $0.key == key }) {
+            let entry = cachedPlans.remove(at: exactIndex)
+            cachedPlans.append(entry)
+            return entry.plan
+        }
+
+        if let coveringIndex = cachedPlans.firstIndex(where: {
+            $0.key.documentID == key.documentID &&
+            $0.key.textLength == key.textLength &&
+            NSLocationInRange(range.location, $0.key.range) &&
+            NSMaxRange(range) <= NSMaxRange($0.key.range) &&
+            textFingerprint(text, range: $0.key.range) == $0.key.fingerprint
+        }) {
+            let entry = cachedPlans.remove(at: coveringIndex)
+            cachedPlans.append(entry)
+            return entry.plan
+        }
+
+        let plan = build()
+        cachedPlans.append(CachedPlanEntry(key: key, plan: plan))
+        if cachedPlans.count > 24 {
+            cachedPlans.removeFirst(cachedPlans.count - 24)
+        }
+        return plan
+    }
+
+    private func buildPlan(for text: String, coveredRange: NSRange, documentID: UUID) -> HTMLSyntaxHighlighter.HighlightPlan {
+        let nsText = text as NSString
+        guard coveredRange.location != NSNotFound,
+              coveredRange.length > 0,
+              coveredRange.location >= 0,
+              NSMaxRange(coveredRange) <= nsText.length else {
+            return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
+        }
+
+        var spans: [HTMLSyntaxHighlighter.HighlightSpan] = []
+        spans.reserveCapacity(max(32, coveredRange.length / 16))
+
+        var scannerState: HTMLHighlightScannerState = .text
+        for chunkRange in HTMLHighlightPlanBuilder.chunkRanges(for: coveredRange) {
+            let chunk = cachedChunk(for: text, range: chunkRange, inputState: scannerState, documentID: documentID) {
+                HTMLHighlightPlanBuilder.buildChunk(in: nsText, range: chunkRange, initialState: scannerState)
+            }
+            spans.append(contentsOf: chunk.spans)
+            scannerState = chunk.endState
+        }
+
+        return HTMLSyntaxHighlighter.HighlightPlan(
+            coveredRange: coveredRange,
+            spans: HTMLHighlightPlanBuilder.coalesce(spans)
+        )
+    }
+
+    private func cachedChunk(
+        for text: String,
+        range: NSRange,
+        inputState: HTMLHighlightScannerState,
+        documentID: UUID,
+        build: () -> HTMLHighlightChunkResult
+    ) -> HTMLHighlightChunkResult {
+        let key = PlannerChunkCacheKey(
+            documentID: documentID,
+            textLength: text.utf16.count,
+            range: range,
+            fingerprint: textFingerprint(text, range: range),
+            inputState: inputState
+        )
+
+        if let hitIndex = cachedChunks.firstIndex(where: { $0.key == key }) {
+            let entry = cachedChunks.remove(at: hitIndex)
+            cachedChunks.append(entry)
+            return entry.result
+        }
+
+        let result = build()
+        cachedChunks.append(CachedChunkEntry(key: key, result: result))
+        if cachedChunks.count > 192 {
+            cachedChunks.removeFirst(cachedChunks.count - 192)
+        }
+        return result
+    }
+
+    private func textFingerprint(_ text: String, range: NSRange) -> Int {
+        let nsText = text as NSString
+        guard range.location != NSNotFound,
+              range.length > 0,
+              NSMaxRange(range) <= nsText.length else {
+            return 0
+        }
+
+        let sample = nsText.substring(with: range)
+        var hasher = Hasher()
+        hasher.combine(range.location)
+        hasher.combine(range.length)
+        hasher.combine(sample)
+        return hasher.finalize()
     }
 }
 
 private enum HTMLHighlightPlanBuilder {
+    static let plannerChunkSize = 512
+
     static func fullPlan(for html: String) -> HTMLSyntaxHighlighter.HighlightPlan {
         let nsHTML = html as NSString
         return buildPlan(in: nsHTML, coveredRange: NSRange(location: 0, length: nsHTML.length))
@@ -166,13 +423,22 @@ private enum HTMLHighlightPlanBuilder {
 
     static func rangePlan(for text: String, requestedRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
         let nsText = text as NSString
+        let normalized = normalizedRange(for: text, requestedRange: requestedRange)
+        guard normalized.location != NSNotFound, normalized.length > 0 else {
+            return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
+        }
+        return buildPlan(in: nsText, coveredRange: normalized)
+    }
+
+    static func normalizedRange(for text: String, requestedRange: NSRange) -> NSRange {
+        let nsText = text as NSString
         let textLength = nsText.length
 
         guard textLength > 0,
               requestedRange.location != NSNotFound,
               requestedRange.location >= 0,
               requestedRange.location < textLength else {
-            return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
+            return NSRange(location: 0, length: 0)
         }
 
         let expandRadius = min(100, textLength / 10)
@@ -200,10 +466,10 @@ private enum HTMLHighlightPlanBuilder {
             }
         }
 
-        return buildPlan(in: nsText, coveredRange: expandedRange)
+        return expandedRange
     }
 
-    private static func buildPlan(in text: NSString, coveredRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
+    static func buildPlan(in text: NSString, coveredRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
         guard coveredRange.location != NSNotFound,
               coveredRange.length > 0,
               coveredRange.location >= 0,
@@ -212,125 +478,235 @@ private enum HTMLHighlightPlanBuilder {
         }
 
         var spans: [HTMLSyntaxHighlighter.HighlightSpan] = []
-        spans.reserveCapacity(32)
+        spans.reserveCapacity(max(32, coveredRange.length / 16))
+        var scannerState: HTMLHighlightScannerState = .text
 
-        let end = NSMaxRange(coveredRange)
-        var index = coveredRange.location
-
-        while index < end {
-            if text.character(at: index) != codeUnit("<") {
-                index += 1
-                continue
-            }
-
-            let tagStart = index
-            var cursor = index + 1
-            var tagNameStart = cursor
-
-            if cursor < end && text.character(at: cursor) == codeUnit("/") {
-                cursor += 1
-                tagNameStart = cursor
-            }
-
-            guard tagNameStart < end, isTagNameCharacter(text.character(at: tagNameStart)) else {
-                index += 1
-                continue
-            }
-
-            spans.append(.init(range: NSRange(location: tagStart, length: 1), role: .tag))
-            if tagStart + 1 < tagNameStart {
-                spans.append(.init(range: NSRange(location: tagStart + 1, length: 1), role: .tag))
-            }
-
-            while cursor < end, isTagNameCharacter(text.character(at: cursor)) {
-                cursor += 1
-            }
-
-            spans.append(.init(range: NSRange(location: tagNameStart, length: cursor - tagNameStart), role: .tag))
-
-            while cursor < end {
-                let current = text.character(at: cursor)
-
-                if isWhitespace(current) {
-                    cursor += 1
-                    continue
-                }
-
-                if current == codeUnit(">") {
-                    spans.append(.init(range: NSRange(location: cursor, length: 1), role: .tag))
-                    cursor += 1
-                    break
-                }
-
-                if current == codeUnit("/") {
-                    spans.append(.init(range: NSRange(location: cursor, length: 1), role: .tag))
-                    cursor += 1
-                    continue
-                }
-
-                let attributeStart = cursor
-                while cursor < end, isAttributeNameCharacter(text.character(at: cursor)) {
-                    cursor += 1
-                }
-
-                if cursor == attributeStart {
-                    cursor += 1
-                    continue
-                }
-
-                spans.append(.init(range: NSRange(location: attributeStart, length: cursor - attributeStart), role: .attributeName))
-
-                while cursor < end, isWhitespace(text.character(at: cursor)) {
-                    cursor += 1
-                }
-
-                guard cursor < end, text.character(at: cursor) == codeUnit("=") else {
-                    continue
-                }
-
-                cursor += 1
-                while cursor < end, isWhitespace(text.character(at: cursor)) {
-                    cursor += 1
-                }
-
-                guard cursor < end else { break }
-
-                let currentValueStarter = text.character(at: cursor)
-                if currentValueStarter == codeUnit("\"") || currentValueStarter == codeUnit("'") {
-                    let quote = currentValueStarter
-                    let valueStart = cursor
-                    cursor += 1
-
-                    while cursor < end, text.character(at: cursor) != quote {
-                        cursor += 1
-                    }
-
-                    if cursor < end, text.character(at: cursor) == quote {
-                        cursor += 1
-                    }
-
-                    spans.append(.init(range: NSRange(location: valueStart, length: cursor - valueStart), role: .attributeValue))
-                } else {
-                    let valueStart = cursor
-                    while cursor < end,
-                          !isWhitespace(text.character(at: cursor)),
-                          text.character(at: cursor) != codeUnit(">") {
-                        cursor += 1
-                    }
-
-                    if cursor > valueStart {
-                        spans.append(.init(range: NSRange(location: valueStart, length: cursor - valueStart), role: .attributeValue))
-                    }
-                }
-            }
-
-            index = max(cursor, tagStart + 1)
+        for chunkRange in chunkRanges(for: coveredRange) {
+            let chunk = buildChunk(in: text, range: chunkRange, initialState: scannerState)
+            spans.append(contentsOf: chunk.spans)
+            scannerState = chunk.endState
         }
 
         return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: coveredRange, spans: coalesce(spans))
     }
 
-    private static func coalesce(_ spans: [HTMLSyntaxHighlighter.HighlightSpan]) -> [HTMLSyntaxHighlighter.HighlightSpan] {
+    static func chunkRanges(for coveredRange: NSRange) -> [NSRange] {
+        guard coveredRange.location != NSNotFound, coveredRange.length > 0 else { return [] }
+
+        var ranges: [NSRange] = []
+        ranges.reserveCapacity(max(1, coveredRange.length / plannerChunkSize + 1))
+
+        let coveredEnd = NSMaxRange(coveredRange)
+        var cursor = coveredRange.location
+
+        while cursor < coveredEnd {
+            let nextBoundary = ((cursor / plannerChunkSize) + 1) * plannerChunkSize
+            let chunkEnd = min(coveredEnd, max(cursor + 1, nextBoundary))
+            ranges.append(NSRange(location: cursor, length: chunkEnd - cursor))
+            cursor = chunkEnd
+        }
+
+        return ranges
+    }
+
+    static func chunkStart(for location: Int) -> Int {
+        guard location > 0 else { return 0 }
+        return (location / plannerChunkSize) * plannerChunkSize
+    }
+
+    static func chunkEnd(forExclusiveLocation location: Int) -> Int {
+        guard location > 0 else { return plannerChunkSize }
+        return ((max(0, location - 1) / plannerChunkSize) + 1) * plannerChunkSize
+    }
+
+    static func buildChunk(
+        in text: NSString,
+        range: NSRange,
+        initialState: HTMLHighlightScannerState
+    ) -> HTMLHighlightChunkResult {
+        guard range.location != NSNotFound,
+              range.length > 0,
+              range.location >= 0,
+              NSMaxRange(range) <= text.length else {
+            return HTMLHighlightChunkResult(endState: initialState, spans: [])
+        }
+
+        var spans: [HTMLSyntaxHighlighter.HighlightSpan] = []
+        spans.reserveCapacity(max(8, range.length / 24))
+
+        var state = initialState
+        var activeRole: HTMLSyntaxHighlighter.HighlightRole?
+        var activeStart = 0
+        var activeEnd = 0
+
+        func flushActiveSpan() {
+            guard let role = activeRole, activeEnd > activeStart else { return }
+            spans.append(.init(range: NSRange(location: activeStart, length: activeEnd - activeStart), role: role))
+            activeRole = nil
+        }
+
+        func emit(role: HTMLSyntaxHighlighter.HighlightRole, at location: Int) {
+            if activeRole == role, activeEnd == location {
+                activeEnd += 1
+                return
+            }
+
+            flushActiveSpan()
+            activeRole = role
+            activeStart = location
+            activeEnd = location + 1
+        }
+
+        let end = NSMaxRange(range)
+        var index = range.location
+        while index < end {
+            let current = text.character(at: index)
+
+            switch state {
+            case .text:
+                flushActiveSpan()
+                if current == codeUnit("<") {
+                    emit(role: .tag, at: index)
+                    state = .afterTagOpen
+                }
+
+            case .afterTagOpen:
+                if current == codeUnit("/") {
+                    emit(role: .tag, at: index)
+                    state = .tagName
+                } else if isTagNameCharacter(current) {
+                    emit(role: .tag, at: index)
+                    state = .tagName
+                } else {
+                    flushActiveSpan()
+                    state = .text
+                }
+
+            case .tagName:
+                if isTagNameCharacter(current) {
+                    emit(role: .tag, at: index)
+                } else if isWhitespace(current) {
+                    flushActiveSpan()
+                    state = .insideTag
+                } else if current == codeUnit(">") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .text
+                } else if current == codeUnit("/") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .insideTag
+                } else {
+                    flushActiveSpan()
+                    state = .insideTag
+                }
+
+            case .insideTag:
+                flushActiveSpan()
+                if isWhitespace(current) {
+                    break
+                } else if current == codeUnit(">") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .text
+                } else if current == codeUnit("/") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                } else if isAttributeNameCharacter(current) {
+                    emit(role: .attributeName, at: index)
+                    state = .attributeName
+                }
+
+            case .attributeName:
+                if isAttributeNameCharacter(current) {
+                    emit(role: .attributeName, at: index)
+                } else if isWhitespace(current) {
+                    flushActiveSpan()
+                    state = .afterAttributeName
+                } else if current == codeUnit("=") {
+                    flushActiveSpan()
+                    state = .beforeAttributeValue
+                } else if current == codeUnit(">") {
+                    flushActiveSpan()
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .text
+                } else if current == codeUnit("/") {
+                    flushActiveSpan()
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .insideTag
+                } else {
+                    flushActiveSpan()
+                    state = .insideTag
+                }
+
+            case .afterAttributeName:
+                flushActiveSpan()
+                if isWhitespace(current) {
+                    break
+                } else if current == codeUnit("=") {
+                    state = .beforeAttributeValue
+                } else if current == codeUnit(">") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .text
+                } else if current == codeUnit("/") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .insideTag
+                } else if isAttributeNameCharacter(current) {
+                    emit(role: .attributeName, at: index)
+                    state = .attributeName
+                } else {
+                    state = .insideTag
+                }
+
+            case .beforeAttributeValue:
+                flushActiveSpan()
+                if isWhitespace(current) {
+                    break
+                } else if current == codeUnit("\"") || current == codeUnit("'") {
+                    emit(role: .attributeValue, at: index)
+                    state = .quotedAttributeValue(current)
+                } else if current == codeUnit(">") {
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .text
+                } else {
+                    emit(role: .attributeValue, at: index)
+                    state = .unquotedAttributeValue
+                }
+
+            case .quotedAttributeValue(let quote):
+                emit(role: .attributeValue, at: index)
+                if current == quote {
+                    flushActiveSpan()
+                    state = .insideTag
+                }
+
+            case .unquotedAttributeValue:
+                if isWhitespace(current) {
+                    flushActiveSpan()
+                    state = .insideTag
+                } else if current == codeUnit(">") {
+                    flushActiveSpan()
+                    emit(role: .tag, at: index)
+                    flushActiveSpan()
+                    state = .text
+                } else {
+                    emit(role: .attributeValue, at: index)
+                }
+            }
+
+            index += 1
+        }
+
+        flushActiveSpan()
+        return HTMLHighlightChunkResult(endState: state, spans: spans)
+    }
+
+    static func coalesce(_ spans: [HTMLSyntaxHighlighter.HighlightSpan]) -> [HTMLSyntaxHighlighter.HighlightSpan] {
         let sorted = spans.sorted {
             if $0.range.location == $1.range.location {
                 return $0.range.length < $1.range.length
