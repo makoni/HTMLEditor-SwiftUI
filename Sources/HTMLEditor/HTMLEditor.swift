@@ -15,6 +15,7 @@ public struct HTMLEditor: NSViewRepresentable {
     }
 
     public func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
         let textView = AppearanceAwareTextView()
         textView.delegate = context.coordinator
         textView.isEditable = true
@@ -38,6 +39,21 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = true
 
         textView.string = html
+        textView.coordinator = context.coordinator
+        context.coordinator.previousText = html
+        context.coordinator.displayedTextIdentity = HTMLEditor.textIdentity(for: html)
+
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .bezelBorder
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.scrollerKnobStyle = .light
+        scrollView.verticalScrollElasticity = .allowed
+        scrollView.horizontalScrollElasticity = .none
+
         HTMLSyntaxHighlighter.applyThemeBase(to: textView, theme: currentTheme)
         if html.utf16.count <= HTMLSyntaxHighlighter.maxHighlightLength,
            let layoutManager = textView.layoutManager {
@@ -48,25 +64,12 @@ public struct HTMLEditor: NSViewRepresentable {
                 range: NSRange(location: 0, length: html.utf16.count)
             )
         }
-        textView.coordinator = context.coordinator
-
-        let scrollView = NSScrollView()
-        scrollView.documentView = textView
-        scrollView.hasVerticalScroller = true
-        scrollView.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(context.coordinator.scrollViewDidScroll(_:)),
             name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView
         )
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.borderType = .bezelBorder
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.scrollerKnobStyle = .light
-        scrollView.verticalScrollElasticity = .allowed
-        scrollView.horizontalScrollElasticity = .none
 
         if let container = textView.textContainer {
             container.lineFragmentPadding = 0
@@ -77,7 +80,7 @@ public struct HTMLEditor: NSViewRepresentable {
 
     public func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        if context.coordinator.shouldApplyExternalUpdate(incomingHTML: html, currentText: textView.string) {
+        if context.coordinator.shouldApplyExternalUpdate(incomingHTML: html) {
             let currentTheme = theme.current(for: NSApp.effectiveAppearance)
             context.coordinator.scheduleExternalHighlightUpdate(html: html, theme: currentTheme, textView: textView)
         }
@@ -112,15 +115,20 @@ public struct HTMLEditor: NSViewRepresentable {
         var visibleHighlightTask: Task<Void, Never>?
         var prewarmTask: Task<Void, Never>?
         var fullHighlightTask: Task<Void, Never>?
+        var bindingSyncTask: Task<Void, Never>?
+        var detailRecoveryTask: Task<Void, Never>?
         var documentVersion: Int = 0
         let plannerDocumentID = UUID()
         var pendingLocalBindingSyncHTML: String?
+        var awaitingLocalBindingEcho = false
         var pendingEdit: PendingEdit?
         var cachedFullHighlightPlan: HTMLSyntaxHighlighter.HighlightPlan?
         var cachedFullHighlightVersion: Int?
         var cachedRangePlans: [CachedRangePlan] = []
         var lastVisibleRange = NSRange(location: 0, length: 0)
-        var highlightedRanges: [NSRange] = []
+        var highlightCoverage = HTMLEditorHighlightCoverage()
+        var visibleHighlightState = HTMLEditorVisibleHighlightState()
+        var displayedTextIdentity: Int = 0
 
         init(_ parent: HTMLEditor) {
             self.parent = parent
@@ -139,68 +147,101 @@ public struct HTMLEditor: NSViewRepresentable {
             return true
         }
 
+        public func textDidEndEditing(_ notification: Notification) {
+            Task { @MainActor [weak self] in
+                self?.flushPendingBindingSync()
+            }
+        }
+
         public func textDidChange(_ notification: Notification) {
             guard !isUpdatingFromHighlighting,
                   let textView = notification.object as? NSTextView else { return }
 
             let newText = textView.string
-            if parent.html != newText {
-                let oldLength = previousText.utf16.count
-                let newLength = newText.utf16.count
-                let strategy = HTMLEditor.refreshStrategy(
-                    oldLength: oldLength,
-                    newLength: newLength,
-                    editRangeLength: pendingEdit?.affectedRange.length ?? 0,
-                    replacementLength: pendingEdit?.replacementUTF16Length ?? 0
+            let oldLength = previousText.utf16.count
+            let newLength = newText.utf16.count
+            let strategy = HTMLEditor.refreshStrategy(
+                oldLength: oldLength,
+                newLength: newLength,
+                editRangeLength: pendingEdit?.affectedRange.length ?? 0,
+                replacementLength: pendingEdit?.replacementUTF16Length ?? 0
+            )
+
+            previousText = newText
+            displayedTextIdentity = HTMLEditor.textIdentity(for: newText)
+            documentVersion &+= 1
+            cachedFullHighlightPlan = nil
+            cachedFullHighlightVersion = nil
+            fullHighlightTask?.cancel()
+            prewarmTask?.cancel()
+            detailRecoveryTask?.cancel()
+
+            if let pendingEdit {
+                highlightCoverage.remapAfterEdit(
+                    editRange: pendingEdit.affectedRange,
+                    replacementUTF16Length: pendingEdit.replacementUTF16Length,
+                    newTextLength: newLength,
+                    dirtyExpansion: HTMLEditor.highlightBudget(forTextLength: newLength).visibleExpansion
                 )
-
-                previousText = newText
-                pendingLocalBindingSyncHTML = newText
-                parent.html = newText
-                documentVersion &+= 1
-                cachedFullHighlightPlan = nil
-                cachedFullHighlightVersion = nil
-                fullHighlightTask?.cancel()
-                prewarmTask?.cancel()
-
-                if let pendingEdit, strategy == .incremental || strategy == .mediumChange {
-                    invalidateCaches(for: pendingEdit, newTextLength: newLength)
-                    Task {
-                        await HTMLSyntaxHighlighter.invalidatePlannerCache(
-                            documentID: self.plannerDocumentID,
-                            editRange: pendingEdit.affectedRange,
-                            replacementUTF16Length: pendingEdit.replacementUTF16Length,
-                            newTextLength: newLength
-                        )
-                    }
-                    self.pendingEdit = nil
-                } else {
-                    cachedRangePlans.removeAll()
-                    highlightedRanges.removeAll()
-                    lastVisibleRange = NSRange(location: 0, length: 0)
-                    Task {
-                        await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
-                    }
-                    self.pendingEdit = nil
-                }
-
-                if strategy == .majorChange || strategy == .largeDocument {
-                    cachedRangePlans.removeAll()
-                    highlightedRanges.removeAll()
-                    lastVisibleRange = NSRange(location: 0, length: 0)
-                    Task {
-                        await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
-                    }
-                }
-
-                guard let scrollView = textView.enclosingScrollView else { return }
-                let allowPrewarm = strategy == .incremental
-                scheduleVisibleRangeHighlighting(
+                preserveVisibleHighlightAfterEdit(
                     textView: textView,
-                    scrollView: scrollView,
-                    forceHighlight: true,
-                    allowPrewarm: allowPrewarm
+                    edit: pendingEdit,
+                    newTextLength: newLength
                 )
+                refreshDirtyBlockHighlightAfterEdit(
+                    textView: textView,
+                    newTextLength: newLength
+                )
+            }
+
+            if let pendingEdit, strategy == .incremental || strategy == .mediumChange {
+                invalidateCaches(for: pendingEdit, newTextLength: newLength)
+                Task {
+                    await HTMLSyntaxHighlighter.invalidatePlannerCache(
+                        documentID: self.plannerDocumentID,
+                        editRange: pendingEdit.affectedRange,
+                        replacementUTF16Length: pendingEdit.replacementUTF16Length,
+                        newTextLength: newLength
+                    )
+                }
+                self.pendingEdit = nil
+            } else {
+                cachedRangePlans.removeAll()
+                lastVisibleRange = NSRange(location: 0, length: 0)
+                Task {
+                    await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
+                }
+                self.pendingEdit = nil
+            }
+
+            if strategy == .majorChange || strategy == .largeDocument {
+                cachedRangePlans.removeAll()
+                lastVisibleRange = NSRange(location: 0, length: 0)
+                Task {
+                    await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
+                }
+            }
+
+            scheduleBindingSync(for: newText)
+
+            guard let scrollView = textView.enclosingScrollView else { return }
+            let detail = HTMLEditor.highlightDetail(
+                forTextLength: newLength,
+                strategy: strategy,
+                trigger: .edit
+            )
+            let allowPrewarm = strategy == .incremental
+            scheduleVisibleRangeHighlighting(
+                textView: textView,
+                scrollView: scrollView,
+                forceHighlight: true,
+                allowPrewarm: allowPrewarm,
+                trigger: .edit,
+                detail: detail
+            )
+
+            if detail == .tagsOnly {
+                scheduleFullDetailRecovery(textView: textView, scrollView: scrollView)
             }
         }
 
@@ -209,6 +250,8 @@ public struct HTMLEditor: NSViewRepresentable {
             visibleHighlightTask?.cancel()
             prewarmTask?.cancel()
             fullHighlightTask?.cancel()
+            bindingSyncTask?.cancel()
+            detailRecoveryTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
     }

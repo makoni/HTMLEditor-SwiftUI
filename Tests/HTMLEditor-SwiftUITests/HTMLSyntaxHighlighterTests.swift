@@ -184,3 +184,25 @@ import AppKit
 
     #expect(hasTagHighlighting == true)
 }
+
+@Test func testMergedPlanReplacesOverlayRangeWithoutDroppingOutsideSpans() async throws {
+    let basePlan = HTMLSyntaxHighlighter.HighlightPlan(
+        coveredRange: NSRange(location: 0, length: 30),
+        spans: [
+            .init(range: NSRange(location: 0, length: 5), role: .tag),
+            .init(range: NSRange(location: 20, length: 5), role: .tag)
+        ]
+    )
+    let overlayPlan = HTMLSyntaxHighlighter.HighlightPlan(
+        coveredRange: NSRange(location: 8, length: 10),
+        spans: [
+            .init(range: NSRange(location: 10, length: 4), role: .attributeName)
+        ]
+    )
+
+    let merged = HTMLSyntaxHighlighter.mergedPlan(base: basePlan, overlay: overlayPlan)
+
+    #expect(merged.spans.contains { $0.range == NSRange(location: 0, length: 5) })
+    #expect(merged.spans.contains { $0.range == NSRange(location: 20, length: 5) })
+    #expect(merged.spans.contains { $0.range == NSRange(location: 10, length: 4) })
+}

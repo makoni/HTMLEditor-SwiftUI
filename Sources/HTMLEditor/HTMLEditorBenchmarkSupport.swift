@@ -16,7 +16,9 @@ public enum HTMLEditorBenchmarkSupport {
             benchmarkOverlap(sampleHTML),
             benchmarkSameLengthEdit(sampleHTML),
             benchmarkLengthChangingEdit(sampleHTML),
-            benchmarkContextIndependentReuse()
+            benchmarkContextIndependentReuse(),
+            benchmarkVisibleHighlightRemap(sampleHTML),
+            benchmarkDirtyBlockLocalPass(sampleHTML)
         ]
     }
 
@@ -116,6 +118,56 @@ public enum HTMLEditorBenchmarkSupport {
         }
     }
 
+    private static func benchmarkVisibleHighlightRemap(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+        let initialPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
+            documentID: UUID(),
+            text: sampleHTML,
+            requestedRange: NSRange(location: 14_000, length: 1_600)
+        )
+        let editLocation = 14_320
+        let replacement = " data-role=\"new\""
+        let updatedHTML = replaceUTF16Range(
+            in: sampleHTML,
+            range: NSRange(location: editLocation, length: 0),
+            replacement: replacement
+        )
+
+        return await measure(label: "bench-visible-highlight-remap", iterations: 25) {
+            _ = HTMLEditorVisibleHighlightState.remapPlan(
+                initialPlan,
+                editRange: NSRange(location: editLocation, length: 0),
+                replacementLength: replacement.utf16.count,
+                newTextLength: updatedHTML.utf16.count,
+                dirtyRange: HTMLEditorVisibleHighlightState.dirtyRange(
+                    for: NSRange(location: editLocation, length: 0),
+                    replacementLength: replacement.utf16.count,
+                    newTextLength: updatedHTML.utf16.count,
+                    expansion: HTMLEditor.highlightBudget(forTextLength: updatedHTML.utf16.count).visibleExpansion
+                )
+            )
+        }
+    }
+
+    private static func benchmarkDirtyBlockLocalPass(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+        let initialPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
+            documentID: UUID(),
+            text: sampleHTML,
+            requestedRange: NSRange(location: 14_000, length: 1_600)
+        )
+        let localRange = NSRange(location: 14_200, length: 1_024)
+
+        return await measure(label: "bench-dirty-block-local-pass", iterations: 25) {
+            let localPlan = HTMLHighlightPlanBuilder.rangePlan(
+                for: sampleHTML,
+                requestedRange: localRange
+            )
+            _ = HTMLSyntaxHighlighter.mergedPlan(
+                base: initialPlan,
+                overlay: HTMLSyntaxHighlighter.clippedPlan(localPlan, to: localRange)
+            )
+        }
+    }
+
     private static func measure(
         label: String,
         iterations: Int,
@@ -138,6 +190,12 @@ public enum HTMLEditorBenchmarkSupport {
             minimumMilliseconds: samples.min() ?? 0,
             maximumMilliseconds: samples.max() ?? 0
         )
+    }
+
+    private static func replaceUTF16Range(in text: String, range: NSRange, replacement: String) -> String {
+        let mutable = NSMutableString(string: text)
+        mutable.replaceCharacters(in: range, with: replacement)
+        return mutable as String
     }
 }
 #endif

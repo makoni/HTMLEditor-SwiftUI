@@ -5,13 +5,13 @@ import Foundation
 public struct HTMLSyntaxHighlighter {
     static let maxHighlightLength = 50_000
 
-    enum HighlightRole: Sendable, Equatable {
+    enum HighlightRole: Sendable, Equatable, Hashable {
         case tag
         case attributeName
         case attributeValue
     }
 
-    struct HighlightSpan: Sendable, Equatable {
+    struct HighlightSpan: Sendable, Equatable, Hashable {
         let range: NSRange
         let role: HighlightRole
     }
@@ -141,6 +141,82 @@ public struct HTMLSyntaxHighlighter {
                 forCharacterRange: span.range
             )
         }
+    }
+
+    static func applyTemporary(
+        plan: HighlightPlan,
+        replacing previousPlan: HighlightPlan?,
+        to layoutManager: NSLayoutManager,
+        theme: HTMLEditorColorScheme
+    ) {
+        guard let previousPlan else {
+            applyTemporary(plan: plan, to: layoutManager, theme: theme)
+            return
+        }
+
+        let overlap = NSIntersectionRange(previousPlan.coveredRange, plan.coveredRange)
+        if overlap.location == NSNotFound || overlap.length == 0 {
+            applyTemporary(plan: plan, to: layoutManager, theme: theme)
+            return
+        }
+
+        for previousSpan in previousPlan.spans {
+            let intersection = NSIntersectionRange(previousSpan.range, plan.coveredRange)
+            guard intersection.location != NSNotFound, intersection.length > 0 else { continue }
+            layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: intersection)
+        }
+
+        if previousPlan.coveredRange.location > plan.coveredRange.location {
+            let leadingRange = NSRange(
+                location: plan.coveredRange.location,
+                length: previousPlan.coveredRange.location - plan.coveredRange.location
+            )
+            clearTemporaryHighlights(in: layoutManager, range: leadingRange)
+        }
+
+        if NSMaxRange(previousPlan.coveredRange) < NSMaxRange(plan.coveredRange) {
+            let trailingRange = NSRange(
+                location: NSMaxRange(previousPlan.coveredRange),
+                length: NSMaxRange(plan.coveredRange) - NSMaxRange(previousPlan.coveredRange)
+            )
+            clearTemporaryHighlights(in: layoutManager, range: trailingRange)
+        }
+
+        for span in plan.spans {
+            guard span.range.location >= 0 else { continue }
+            layoutManager.addTemporaryAttributes(
+                [.foregroundColor: color(for: span.role, theme: theme)],
+                forCharacterRange: span.range
+            )
+        }
+    }
+
+    static func filteredPlan(_ plan: HighlightPlan, detail: HTMLEditorHighlightDetail) -> HighlightPlan {
+        switch detail {
+        case .full:
+            return plan
+        case .tagsOnly:
+            return HighlightPlan(
+                coveredRange: plan.coveredRange,
+                spans: plan.spans.filter { $0.role == .tag }
+            )
+        }
+    }
+
+    static func mergedPlan(base: HighlightPlan, overlay: HighlightPlan) -> HighlightPlan {
+        let overlayRange = overlay.coveredRange
+        let retainedBaseSpans = base.spans.filter {
+            NSIntersectionRange($0.range, overlayRange).length == 0
+        }
+        let mergedCoveredRange = NSUnionRange(base.coveredRange, overlay.coveredRange)
+        let mergedSpans = (retainedBaseSpans + overlay.spans).sorted {
+            if $0.range.location == $1.range.location {
+                return $0.range.length < $1.range.length
+            }
+            return $0.range.location < $1.range.location
+        }
+
+        return HighlightPlan(coveredRange: mergedCoveredRange, spans: mergedSpans)
     }
 
     @MainActor

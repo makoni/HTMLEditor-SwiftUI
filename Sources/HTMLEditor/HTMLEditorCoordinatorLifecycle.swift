@@ -5,15 +5,19 @@ import QuartzCore
 extension HTMLEditor.Coordinator {
     @MainActor
     func scheduleExternalHighlightUpdate(html: String, theme: HTMLEditorColorScheme, textView: NSTextView) {
+        bindingSyncTask?.cancel()
+        detailRecoveryTask?.cancel()
         previousText = html
+        displayedTextIdentity = HTMLEditor.textIdentity(for: html)
         pendingLocalBindingSyncHTML = nil
+        awaitingLocalBindingEcho = false
         documentVersion &+= 1
         lastVisibleRange = NSRange(location: 0, length: 0)
-        highlightedRanges.removeAll()
-        highlightedRanges.append(NSRange(location: 0, length: html.utf16.count))
+        highlightCoverage.clear()
         cachedFullHighlightPlan = nil
         cachedFullHighlightVersion = nil
         cachedRangePlans.removeAll()
+        visibleHighlightState.clear()
         visibleHighlightTask?.cancel()
         prewarmTask?.cancel()
         Task {
@@ -23,17 +27,53 @@ extension HTMLEditor.Coordinator {
     }
 
     @MainActor
-    func shouldApplyExternalUpdate(incomingHTML: String, currentText: String) -> Bool {
-        if let pendingLocalBindingSyncHTML {
-            if incomingHTML == pendingLocalBindingSyncHTML {
-                self.pendingLocalBindingSyncHTML = nil
-                return false
-            }
-
+    func shouldApplyExternalUpdate(incomingHTML: String) -> Bool {
+        if awaitingLocalBindingEcho {
+            awaitingLocalBindingEcho = false
             return false
         }
 
-        return currentText != incomingHTML
+        return HTMLEditor.textIdentity(for: incomingHTML) != displayedTextIdentity
+    }
+
+    @MainActor
+    func scheduleBindingSync(for html: String) {
+        pendingLocalBindingSyncHTML = html
+        bindingSyncTask?.cancel()
+
+        guard let delay = HTMLEditor.bindingSyncDelay(forTextLength: html.utf16.count) else {
+            pendingLocalBindingSyncHTML = nil
+            awaitingLocalBindingEcho = true
+            parent.html = html
+            return
+        }
+
+        let scheduledVersion = documentVersion
+        bindingSyncTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+
+            guard let self,
+                  self.documentVersion == scheduledVersion,
+                  self.pendingLocalBindingSyncHTML != nil else { return }
+            self.pendingLocalBindingSyncHTML = nil
+            self.awaitingLocalBindingEcho = true
+            self.parent.html = html
+        }
+    }
+
+    @MainActor
+    func flushPendingBindingSync() {
+        bindingSyncTask?.cancel()
+        bindingSyncTask = nil
+
+        guard let pendingLocalBindingSyncHTML else { return }
+        self.pendingLocalBindingSyncHTML = nil
+        awaitingLocalBindingEcho = true
+        parent.html = pendingLocalBindingSyncHTML
     }
 
     @MainActor
@@ -96,10 +136,12 @@ extension HTMLEditor.Coordinator {
                 )
                 let clippedPlan = HTMLSyntaxHighlighter.clippedPlan(plan, to: visibleWindow)
                 HTMLSyntaxHighlighter.applyTemporary(plan: clippedPlan, to: layoutManager, theme: theme)
+                visibleHighlightState.replace(with: clippedPlan)
                 recordHighlightedRange(clippedPlan.coveredRange)
                 if budget.prewarmEnabled {
                     scheduleViewportPrewarm(
                         around: visibleWindow,
+                        direction: 0,
                         textSnapshot: html,
                         theme: theme,
                         version: documentVersion,
@@ -139,6 +181,8 @@ extension HTMLEditor.Coordinator {
         }
 
         textView.string = html
+        highlightCoverage.clear()
+        visibleHighlightState.clear()
 
         let maxLocation = textView.string.utf16.count
         let clampedLocation = min(selectedRange.location, maxLocation)
@@ -182,12 +226,13 @@ extension HTMLEditor.Coordinator {
         textView.backgroundColor = currentTheme.background
         textView.textColor = currentTheme.foreground
 
+        let currentHTML = textView.string
         if let cachedFullHighlightPlan,
            cachedFullHighlightVersion == documentVersion,
            let scrollView = textView.enclosingScrollView {
-            applyFullHighlightPlan(cachedFullHighlightPlan, html: parent.html, theme: currentTheme, to: textView, in: scrollView)
+            applyFullHighlightPlan(cachedFullHighlightPlan, html: currentHTML, theme: currentTheme, to: textView, in: scrollView)
         } else {
-            performFullHighlighting(html: parent.html, theme: currentTheme, textView: textView)
+            performFullHighlighting(html: currentHTML, theme: currentTheme, textView: textView)
         }
     }
 }

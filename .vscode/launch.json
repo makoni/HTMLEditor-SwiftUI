@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HTMLEditor-SwiftUI}",
+            "name": "Debug HTMLEditorBenchmarks",
+            "target": "HTMLEditorBenchmarks",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug HTMLEditorBenchmarks"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:HTMLEditor-SwiftUI}",
+            "name": "Release HTMLEditorBenchmarks",
+            "target": "HTMLEditorBenchmarks",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release HTMLEditorBenchmarks"
+        }
+    ]
+}

@@ -11,7 +11,7 @@
 ## High-level architecture
 
 - `Sources/HTMLEditor/HTMLEditor.swift` is the SwiftUI/AppKit bridge. `HTMLEditor` is an `NSViewRepresentable` that wraps an `NSScrollView` containing a custom `NSTextView`, and the bound `html` string is the source of truth between SwiftUI and AppKit.
-- `HTMLEditor.Coordinator` owns edit handling, scroll observation, and syntax refresh scheduling. It tracks `previousText`, `lastVisibleRange`, and `highlightedRanges`, debounces scroll-driven work with a short timer, and clears cached highlight coverage after major edits.
+- `HTMLEditor.Coordinator` owns edit handling, scroll observation, and syntax refresh scheduling. It tracks `previousText`, `lastVisibleRange`, visible highlight state, and block-based highlight coverage, debounces scroll-driven work with a short timer, and remaps visible coverage across local edits.
 - `Sources/HTMLEditor/HTMLSyntaxHighlighter.swift` contains the highlighting engine. `highlight(html:theme:)` does the full-document pass used for initial load and theme changes. `highlightRange(in:range:theme:expandedRange:)` is the incremental path used for visible text updates.
 - Highlighting is intentionally performance-biased. Very large HTML documents fall back to basic styling, and normal editing/scrolling only re-highlights the visible range plus a small buffer instead of the whole document.
 - `Sources/HTMLEditor/HTMLEditorTheme.swift` and `Sources/HTMLEditor/HTMLEditorColorScheme.swift` isolate styling. Appearance changes flow through `AppearanceAwareTextView.viewDidChangeEffectiveAppearance()` and `theme.current(for: NSApp.effectiveAppearance)`.
