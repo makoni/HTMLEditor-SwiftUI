@@ -2,52 +2,68 @@
 
 <img src="https://arm1.ru/img/uploaded/swiftui-text-editor-for-macos-with-html-syntax-highlighting.webp?1" alt="SwiftUI text editor for macOS with HTML syntax highlighting">
 
-HTMLEditor-SwiftUI is a Swift package designed for macOS (v13 and above) that provides a SwiftUI-based text editor with HTML syntax highlighting.
+`HTMLEditor-SwiftUI` is a macOS Swift package that provides a SwiftUI HTML editor with syntax highlighting, theme support, and an adaptive large-document runtime designed to keep typing and scrolling responsive.
+
+## Requirements
+
+- macOS 13+
+- Swift 6 toolchain
+- Compatible with Swift 6.3
 
 ## Features
-- Built-in syntax highlighting for HTML content.
-- Customizable themes and color schemes for the editor.
-- Parsing HTML into an AST for highlighting.
 
-## Adding HTMLEditor-SwiftUI to Your Project
-To add HTMLEditor-SwiftUI to your Swift project, follow these steps:
+- SwiftUI `HTMLEditor` backed by AppKit for macOS editing behavior.
+- HTML syntax highlighting for tags, attribute names, and attribute values.
+- Custom light and dark themes with configurable fonts and colors.
+- Adaptive highlighting pipeline:
+  - full semantic highlighting for smaller HTML documents
+  - viewport-first highlighting for large documents
+  - performance-oriented large-file mode for very large HTML inputs
+- Large-document optimizations including:
+  - visible-range plan caching
+  - document-scoped invalidation
+  - structural dirty-range alignment
+  - burst-coalesced edit repainting
+  - scroll-idle semantic refresh
+  - automatic non-contiguous layout in large-file mode
+- Benchmark target for repeatable performance measurements.
+
+## Installation
+
+### Xcode
 
 1. Open your project in Xcode.
-2. Go to `File > Add Packages...`.
-3. Enter the following URL in the search bar:
+2. Choose **File > Add Packages...**
+3. Enter:
+
+   ```text
+   https://github.com/makoni/HTMLEditor-SwiftUI.git
    ```
-   https://github.com/your-repo/HTMLEditor-SwiftUI.git
-   ```
-4. Select the version rule (e.g., "Up to Next Major Version") and click "Add Package".
-5. Import the package in your Swift files where needed:
+
+4. Add the library product **HTMLEditor-SwiftUI**.
+5. Import the module in Swift code:
+
    ```swift
    import HTMLEditor
    ```
 
-## Demo App
-This repository includes a demo app located in the `HTMLEditorDemoApp/` directory. The demo app showcases the capabilities of the HTMLEditor-SwiftUI package, including syntax highlighting and theme customization. To try it out:
+### Swift Package Manager
 
-1. Open the `HTMLEditor-Demo.xcodeproj` file in Xcode.
-2. Build and run the app on your macOS system.
+```swift
+.package(url: "https://github.com/makoni/HTMLEditor-SwiftUI.git", from: "1.1.0")
+```
 
-## License
-This project is licensed under the MIT License. See the LICENSE file for details.
-
-## Contributions
-Contributions are welcome! Feel free to open issues or submit pull requests to improve the package.
-
-## Usage Example
-Here is a simple example demonstrating the usage of `HTMLEditorView` in a SwiftUI view:
+## Basic Usage
 
 ```swift
 import SwiftUI
 import HTMLEditor
 
 struct ContentView: View {
-    @State private var htmlContent: String = "<p>Hello, World!</p>"
+    @State private var htmlContent = "<p>Hello, World!</p>"
 
     var body: some View {
-        HTMLEditorView(html: $htmlContent)
+        HTMLEditor(html: $htmlContent)
             .frame(minWidth: 400, minHeight: 300)
             .padding()
     }
@@ -55,38 +71,91 @@ struct ContentView: View {
 ```
 
 ## Custom Theme Example
-You can provide your own color theme to the HTML editor. Here's an example:
 
 ```swift
 import SwiftUI
+import AppKit
 import HTMLEditor
 
 struct CustomThemeView: View {
-    @State private var htmlContent: String = "<p>Custom Theme Example</p>"
+    @State private var htmlContent = "<p>Custom Theme Example</p>"
 
     private let customTheme = HTMLEditorTheme(
         light: HTMLEditorColorScheme(
-            foreground: NSColor.blue,
-            background: NSColor.yellow,
-            tag: NSColor.purple,
-            attributeName: NSColor.orange,
-            attributeValue: NSColor.green,
-            font: NSFont.monospacedSystemFont(ofSize: 16, weight: .bold)
+            foreground: .blue,
+            background: .yellow,
+            tag: .purple,
+            attributeName: .orange,
+            attributeValue: .green,
+            font: .monospacedSystemFont(ofSize: 16, weight: .bold)
         ),
         dark: HTMLEditorColorScheme(
-            foreground: NSColor.white,
-            background: NSColor.black,
-            tag: NSColor.red,
-            attributeName: NSColor.cyan,
-            attributeValue: NSColor.magenta,
-            font: NSFont.monospacedSystemFont(ofSize: 16, weight: .bold)
+            foreground: .white,
+            background: .black,
+            tag: .red,
+            attributeName: .cyan,
+            attributeValue: .magenta,
+            font: .monospacedSystemFont(ofSize: 16, weight: .bold)
         )
     )
 
     var body: some View {
-        HTMLEditor(html: $html, theme: customTheme)
+        HTMLEditor(html: $htmlContent, theme: customTheme)
             .frame(minWidth: 400, minHeight: 300)
             .padding()
     }
 }
 ```
+
+## Large HTML Behavior
+
+The editor uses different runtime strategies depending on document size.
+
+- **Smaller documents** use fuller semantic highlighting.
+- **Large documents** switch to viewport-first highlighting and stronger cache reuse.
+- **Very large documents** use a more conservative editing mode with localized repaint, delayed wider recovery, and scroll-idle semantic work to keep interaction responsive.
+
+This means the editor is optimized for both short snippets and multi-megabyte HTML files, but the very-large-file mode intentionally prioritizes responsiveness over immediate full-detail recoloring.
+
+## Benchmarks
+
+The package includes an executable benchmark target:
+
+```bash
+swift run HTMLEditorBenchmarks
+```
+
+To benchmark a specific HTML file:
+
+```bash
+HTML_EDITOR_BENCHMARK_HTML=/path/to/file.html swift run HTMLEditorBenchmarks
+```
+
+## Demo App
+
+The repository includes a demo app in `HTMLEditorDemoApp/`.
+
+```bash
+xcodebuild -project HTMLEditorDemoApp/HTMLEditor-Demo.xcodeproj \
+  -scheme HTMLEditor-Demo \
+  -destination 'platform=macOS' \
+  build CODE_SIGNING_ALLOWED=NO
+```
+
+## Development
+
+Build the package:
+
+```bash
+swift build
+```
+
+Run tests:
+
+```bash
+swift test
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
