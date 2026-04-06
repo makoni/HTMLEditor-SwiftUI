@@ -11,6 +11,9 @@ let package = Package(
         .library(
             name: "HTMLEditor-SwiftUI",
             targets: ["HTMLEditor"]),
+        .executable(
+            name: "HTMLEditorBenchmarks",
+            targets: ["HTMLEditorBenchmarks"]),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -18,6 +21,10 @@ let package = Package(
         .target(
             name: "HTMLEditor",
             dependencies: []
+        ),
+        .executableTarget(
+            name: "HTMLEditorBenchmarks",
+            dependencies: ["HTMLEditor"]
         ),
         .testTarget(
             name: "HTMLEditor-SwiftUITests",
