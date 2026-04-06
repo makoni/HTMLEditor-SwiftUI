@@ -130,6 +130,38 @@ import Foundation
     #expect(HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: 80_000) == true)
 }
 
+@Test func testLocalDirtyHighlightLimitTightensForHugeDocuments() async throws {
+    #expect(HTMLEditor.localDirtyHighlightLimit(forTextLength: 80_000) == 1_024)
+    #expect(HTMLEditor.localDirtyHighlightLimit(forTextLength: 180_000) == 768)
+}
+
+@Test func testImmediateEditHighlightLimitStaysSmallerThanDeferredLocalPass() async throws {
+    #expect(
+        HTMLEditor.immediateEditHighlightLimit(forTextLength: 80_000) <
+        HTMLEditor.localDirtyHighlightLimit(forTextLength: 80_000)
+    )
+    #expect(
+        HTMLEditor.immediateEditHighlightLimit(forTextLength: 180_000) <
+        HTMLEditor.localDirtyHighlightLimit(forTextLength: 180_000)
+    )
+}
+
+@Test func testEditBurstCoalescingDelayAppliesOnlyToLargeDocuments() async throws {
+    #expect(HTMLEditor.editBurstCoalescingDelay(forTextLength: 10_000) == nil)
+    #expect(HTMLEditor.editBurstCoalescingDelay(forTextLength: 80_000) == 25_000_000)
+    #expect(HTMLEditor.editBurstCoalescingDelay(forTextLength: 180_000) == 40_000_000)
+}
+
+@Test func testScrollIdleModeAppliesOnlyToLargeDocuments() async throws {
+    #expect(HTMLEditor.shouldUseScrollIdleMode(forTextLength: 10_000) == false)
+    #expect(HTMLEditor.shouldUseScrollIdleMode(forTextLength: 80_000) == true)
+}
+
+@Test func testNonContiguousLayoutAppliesOnlyToLargeDocuments() async throws {
+    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: 10_000) == false)
+    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: 80_000) == true)
+}
+
 @Test func testLocalDirtyHighlightRangeIsClamped() async throws {
     let dirtyRange = NSRange(location: 1_000, length: 800)
     let clamped = HTMLEditor.localDirtyHighlightRange(
@@ -141,4 +173,18 @@ import Foundation
     #expect(clamped.length == 512)
     #expect(clamped.location <= dirtyRange.location + dirtyRange.length / 2)
     #expect(NSMaxRange(clamped) >= dirtyRange.location + dirtyRange.length / 2)
+}
+
+@Test func testStructuralDirtyRangeAlignsToTagBoundaries() async throws {
+    let html = "<div class=\"one\"><span id=\"two\">text</span></div>" as NSString
+    let classRange = html.range(of: "class")
+    let aligned = HTMLEditor.structuralDirtyRange(
+        for: classRange,
+        replacementLength: "data-class".utf16.count,
+        in: html,
+        expansion: 8
+    )
+
+    #expect(aligned.location <= html.range(of: "<div").location)
+    #expect(NSMaxRange(aligned) >= html.range(of: ">").location + 1)
 }

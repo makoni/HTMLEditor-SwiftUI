@@ -28,7 +28,9 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.layoutManager?.allowsNonContiguousLayout = false
+        textView.layoutManager?.allowsNonContiguousLayout = HTMLEditor.shouldUseNonContiguousLayout(
+            forTextLength: html.utf16.count
+        )
         textView.usesRuler = false
         textView.isRulerVisible = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -80,6 +82,7 @@ public struct HTMLEditor: NSViewRepresentable {
 
     public func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        context.coordinator.updateLayoutPolicy(textView: textView, textLength: html.utf16.count)
         if context.coordinator.shouldApplyExternalUpdate(incomingHTML: html) {
             let currentTheme = theme.current(for: NSApp.effectiveAppearance)
             context.coordinator.scheduleExternalHighlightUpdate(html: html, theme: currentTheme, textView: textView)
@@ -113,10 +116,12 @@ public struct HTMLEditor: NSViewRepresentable {
         var previousText = ""
         var visibleHighlightDebounceTask: Task<Void, Never>?
         var visibleHighlightTask: Task<Void, Never>?
+        var scrollIdleTask: Task<Void, Never>?
         var prewarmTask: Task<Void, Never>?
         var fullHighlightTask: Task<Void, Never>?
         var bindingSyncTask: Task<Void, Never>?
         var detailRecoveryTask: Task<Void, Never>?
+        var editBurstTask: Task<Void, Never>?
         var documentVersion: Int = 0
         let plannerDocumentID = UUID()
         var pendingLocalBindingSyncHTML: String?
@@ -170,6 +175,7 @@ public struct HTMLEditor: NSViewRepresentable {
             previousText = newText
             displayedTextIdentity = HTMLEditor.textIdentity(for: newText)
             documentVersion &+= 1
+            updateLayoutPolicy(textView: textView, textLength: newLength)
             cachedFullHighlightPlan = nil
             cachedFullHighlightVersion = nil
             fullHighlightTask?.cancel()
@@ -177,18 +183,25 @@ public struct HTMLEditor: NSViewRepresentable {
             detailRecoveryTask?.cancel()
 
             if let pendingEdit {
+                let structuralDirtyRange = HTMLEditor.structuralDirtyRange(
+                    for: pendingEdit.affectedRange,
+                    replacementLength: pendingEdit.replacementUTF16Length,
+                    in: newText as NSString,
+                    expansion: HTMLEditor.highlightBudget(forTextLength: newLength).visibleExpansion
+                )
                 highlightCoverage.remapAfterEdit(
                     editRange: pendingEdit.affectedRange,
                     replacementUTF16Length: pendingEdit.replacementUTF16Length,
                     newTextLength: newLength,
-                    dirtyExpansion: HTMLEditor.highlightBudget(forTextLength: newLength).visibleExpansion
+                    dirtyRange: structuralDirtyRange
                 )
                 preserveVisibleHighlightAfterEdit(
                     textView: textView,
                     edit: pendingEdit,
-                    newTextLength: newLength
+                    newTextLength: newLength,
+                    dirtyRange: structuralDirtyRange
                 )
-                refreshDirtyBlockHighlightAfterEdit(
+                scheduleDirtyBlockHighlightAfterEdit(
                     textView: textView,
                     newTextLength: newLength
                 )
@@ -248,10 +261,12 @@ public struct HTMLEditor: NSViewRepresentable {
         deinit {
             visibleHighlightDebounceTask?.cancel()
             visibleHighlightTask?.cancel()
+            scrollIdleTask?.cancel()
             prewarmTask?.cancel()
             fullHighlightTask?.cancel()
             bindingSyncTask?.cancel()
             detailRecoveryTask?.cancel()
+            editBurstTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
     }

@@ -140,7 +140,11 @@ extension HTMLEditor {
     }
 
     nonisolated static func localDirtyHighlightLimit(forTextLength textLength: Int) -> Int {
-        textLength > 150_000 ? 1_024 : 1_536
+        textLength > 150_000 ? 768 : 1_024
+    }
+
+    nonisolated static func immediateEditHighlightLimit(forTextLength textLength: Int) -> Int {
+        textLength > 150_000 ? 256 : 384
     }
 
     nonisolated static func localDirtyHighlightRange(
@@ -161,6 +165,26 @@ extension HTMLEditor {
         let start = min(centeredStart, max(0, textLength - maxLength))
         let end = min(textLength, start + maxLength)
         return NSRange(location: start, length: max(0, end - start))
+    }
+
+    nonisolated static func editBurstCoalescingDelay(forTextLength textLength: Int) -> UInt64? {
+        if textLength > 150_000 {
+            return 40_000_000
+        }
+
+        if textLength > HTMLSyntaxHighlighter.maxHighlightLength {
+            return 25_000_000
+        }
+
+        return nil
+    }
+
+    nonisolated static func shouldUseScrollIdleMode(forTextLength textLength: Int) -> Bool {
+        textLength > HTMLSyntaxHighlighter.maxHighlightLength
+    }
+
+    nonisolated static func shouldUseNonContiguousLayout(forTextLength textLength: Int) -> Bool {
+        textLength > HTMLSyntaxHighlighter.maxHighlightLength
     }
 
     nonisolated static func textIdentity(for text: String) -> Int {

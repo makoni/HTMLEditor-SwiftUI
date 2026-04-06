@@ -22,7 +22,7 @@ struct HTMLEditorHighlightCoverage {
         editRange: NSRange,
         replacementUTF16Length: Int,
         newTextLength: Int,
-        dirtyExpansion: Int
+        dirtyRange: NSRange
     ) {
         cleanBlocks = Self.remapBlocks(
             cleanBlocks,
@@ -35,12 +35,6 @@ struct HTMLEditorHighlightCoverage {
             editRange: editRange,
             replacementLength: replacementUTF16Length,
             newTextLength: newTextLength
-        )
-        let dirtyRange = HTMLEditorVisibleHighlightState.dirtyRange(
-            for: editRange,
-            replacementLength: replacementUTF16Length,
-            newTextLength: newTextLength,
-            expansion: dirtyExpansion
         )
         dirtyBlocks.formUnion(Self.blocks(for: dirtyRange))
         cleanBlocks.subtract(dirtyBlocks)

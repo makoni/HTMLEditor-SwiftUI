@@ -3,14 +3,60 @@ import AppKit
 
 extension HTMLEditor.Coordinator {
     @MainActor
+    func scheduleDirtyBlockHighlightAfterEdit(
+        textView: NSTextView,
+        newTextLength: Int
+    ) {
+        editBurstTask?.cancel()
+
+        refreshImmediateEditHighlightAfterEdit(
+            textView: textView,
+            newTextLength: newTextLength
+        )
+
+        guard let delay = HTMLEditor.editBurstCoalescingDelay(forTextLength: newTextLength) else {
+            refreshDirtyBlockHighlightAfterEdit(textView: textView, newTextLength: newTextLength)
+            return
+        }
+
+        let scheduledVersion = documentVersion
+        editBurstTask = Task { @MainActor [weak self, weak textView] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+
+            guard let self, let textView, self.documentVersion == scheduledVersion else { return }
+            self.refreshDirtyBlockHighlightAfterEdit(textView: textView, newTextLength: newTextLength)
+        }
+    }
+
+    @MainActor
+    func refreshImmediateEditHighlightAfterEdit(
+        textView: NSTextView,
+        newTextLength: Int
+    ) {
+        guard HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: newTextLength),
+              let dirtyRange = visibleHighlightState.dirtyRange else {
+            return
+        }
+
+        let immediateRange = HTMLEditor.localDirtyHighlightRange(
+            around: dirtyRange,
+            textLength: newTextLength,
+            maxLength: HTMLEditor.immediateEditHighlightLimit(forTextLength: newTextLength)
+        )
+        applyLocalDirtyHighlight(in: immediateRange, textView: textView)
+    }
+
+    @MainActor
     func refreshDirtyBlockHighlightAfterEdit(
         textView: NSTextView,
         newTextLength: Int
     ) {
         guard HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: newTextLength),
-              let textStorage = textView.textStorage,
-              let dirtyRange = visibleHighlightState.dirtyRange,
-              dirtyRange.length > 0 else {
+              let dirtyRange = visibleHighlightState.dirtyRange else {
             return
         }
 
@@ -19,7 +65,16 @@ extension HTMLEditor.Coordinator {
             textLength: newTextLength,
             maxLength: HTMLEditor.localDirtyHighlightLimit(forTextLength: newTextLength)
         )
-        guard localRange.length > 0 else { return }
+        applyLocalDirtyHighlight(in: localRange, textView: textView)
+    }
+
+    @MainActor
+    private func applyLocalDirtyHighlight(
+        in localRange: NSRange,
+        textView: NSTextView
+    ) {
+        guard localRange.length > 0,
+              let textStorage = textView.textStorage else { return }
 
         let localPlan = HTMLHighlightPlanBuilder.rangePlan(
             for: textStorage.string,

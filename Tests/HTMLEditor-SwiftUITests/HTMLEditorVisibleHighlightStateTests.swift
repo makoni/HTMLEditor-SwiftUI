@@ -83,11 +83,18 @@ import Foundation
         )
     )
 
+    let dirtyRange = HTMLEditorVisibleHighlightState.dirtyRange(
+        for: NSRange(location: 120, length: 0),
+        replacementLength: 4,
+        newTextLength: 220,
+        expansion: 6
+    )
+
     let remappedPlan = state.remapAfterEdit(
         editRange: NSRange(location: 120, length: 0),
         replacementUTF16Length: 4,
         newTextLength: 220,
-        dirtyExpansion: 6
+        dirtyRange: dirtyRange
     )
 
     #expect(remappedPlan != nil)

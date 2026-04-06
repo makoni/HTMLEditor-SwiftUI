@@ -32,16 +32,9 @@ struct HTMLEditorVisibleHighlightState {
         editRange: NSRange,
         replacementUTF16Length: Int,
         newTextLength: Int,
-        dirtyExpansion: Int
+        dirtyRange: NSRange
     ) -> HTMLSyntaxHighlighter.HighlightPlan? {
-        let newDirtyRange = Self.dirtyRange(
-            for: editRange,
-            replacementLength: replacementUTF16Length,
-            newTextLength: newTextLength,
-            expansion: dirtyExpansion
-        )
-
-        let remappedExistingDirtyRange = dirtyRange.flatMap {
+        let remappedExistingDirtyRange = self.dirtyRange.flatMap {
             Self.remapRange(
                 $0,
                 editRange: editRange,
@@ -50,10 +43,10 @@ struct HTMLEditorVisibleHighlightState {
             )
         }
         let combinedDirtyRange = remappedExistingDirtyRange.map {
-            Self.union($0, newDirtyRange)
-        } ?? newDirtyRange
+            Self.union($0, dirtyRange)
+        } ?? dirtyRange
 
-        dirtyRange = combinedDirtyRange
+        self.dirtyRange = combinedDirtyRange
 
         guard let plan else { return nil }
 

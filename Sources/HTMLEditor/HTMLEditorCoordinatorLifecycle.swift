@@ -4,9 +4,17 @@ import QuartzCore
 
 extension HTMLEditor.Coordinator {
     @MainActor
+    func updateLayoutPolicy(textView: NSTextView, textLength: Int) {
+        textView.layoutManager?.allowsNonContiguousLayout = HTMLEditor.shouldUseNonContiguousLayout(
+            forTextLength: textLength
+        )
+    }
+
+    @MainActor
     func scheduleExternalHighlightUpdate(html: String, theme: HTMLEditorColorScheme, textView: NSTextView) {
         bindingSyncTask?.cancel()
         detailRecoveryTask?.cancel()
+        updateLayoutPolicy(textView: textView, textLength: html.utf16.count)
         previousText = html
         displayedTextIdentity = HTMLEditor.textIdentity(for: html)
         pendingLocalBindingSyncHTML = nil
@@ -137,7 +145,7 @@ extension HTMLEditor.Coordinator {
                 let clippedPlan = HTMLSyntaxHighlighter.clippedPlan(plan, to: visibleWindow)
                 HTMLSyntaxHighlighter.applyTemporary(plan: clippedPlan, to: layoutManager, theme: theme)
                 visibleHighlightState.replace(with: clippedPlan)
-                recordHighlightedRange(clippedPlan.coveredRange)
+                recordHighlightedRange(clippedPlan.coveredRange, text: textView.string as NSString)
                 if budget.prewarmEnabled {
                     scheduleViewportPrewarm(
                         around: visibleWindow,

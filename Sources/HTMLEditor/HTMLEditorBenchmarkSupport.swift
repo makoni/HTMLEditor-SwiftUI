@@ -18,7 +18,13 @@ public enum HTMLEditorBenchmarkSupport {
             benchmarkLengthChangingEdit(sampleHTML),
             benchmarkContextIndependentReuse(),
             benchmarkVisibleHighlightRemap(sampleHTML),
-            benchmarkDirtyBlockLocalPass(sampleHTML)
+            benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 256),
+            benchmarkDirtyBlockLocalPass(sampleHTML),
+            benchmarkLayoutVisibleRangeMap(sampleHTML),
+            benchmarkApplyTemporaryVisiblePlan(sampleHTML),
+            benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 512),
+            benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 768),
+            benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 1_024)
         ]
     }
 
@@ -149,14 +155,21 @@ public enum HTMLEditorBenchmarkSupport {
     }
 
     private static func benchmarkDirtyBlockLocalPass(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+        await benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 1_024)
+    }
+
+    private static func benchmarkDirtyBlockLocalPass(
+        _ sampleHTML: String,
+        localLength: Int
+    ) async -> HTMLEditorBenchmarkResult {
         let initialPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
             documentID: UUID(),
             text: sampleHTML,
             requestedRange: NSRange(location: 14_000, length: 1_600)
         )
-        let localRange = NSRange(location: 14_200, length: 1_024)
+        let localRange = NSRange(location: 14_200, length: min(localLength, max(1, sampleHTML.utf16.count - 14_200)))
 
-        return await measure(label: "bench-dirty-block-local-pass", iterations: 25) {
+        return await measure(label: "bench-dirty-block-local-pass-\(localLength)", iterations: 25) {
             let localPlan = HTMLHighlightPlanBuilder.rangePlan(
                 for: sampleHTML,
                 requestedRange: localRange
@@ -165,6 +178,28 @@ public enum HTMLEditorBenchmarkSupport {
                 base: initialPlan,
                 overlay: HTMLSyntaxHighlighter.clippedPlan(localPlan, to: localRange)
             )
+        }
+    }
+
+    private static func benchmarkLayoutVisibleRangeMap(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+        let runtime = makeRuntimeProbe(sampleHTML)
+
+        return await measure(label: "bench-layout-visible-range-map", iterations: 100) {
+            let glyphRange = runtime.layoutManager.glyphRange(forBoundingRect: runtime.probeRect, in: runtime.textContainer)
+            _ = runtime.layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        }
+    }
+
+    private static func benchmarkApplyTemporaryVisiblePlan(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+        let runtime = makeRuntimeProbe(sampleHTML)
+        let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
+            documentID: UUID(),
+            text: sampleHTML,
+            requestedRange: runtime.visibleRange
+        )
+
+        return await measure(label: "bench-apply-temporary-visible-plan", iterations: 100) {
+            HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: runtime.layoutManager, theme: runtime.theme)
         }
     }
 
@@ -196,6 +231,41 @@ public enum HTMLEditorBenchmarkSupport {
         let mutable = NSMutableString(string: text)
         mutable.replaceCharacters(in: range, with: replacement)
         return mutable as String
+    }
+
+    private static func makeRuntimeProbe(_ sampleHTML: String) -> (
+        layoutManager: NSLayoutManager,
+        textContainer: NSTextContainer,
+        probeRect: NSRect,
+        visibleRange: NSRange,
+        theme: HTMLEditorColorScheme
+    ) {
+        let theme = HTMLEditorColorScheme(
+            foreground: .black,
+            background: .white,
+            tag: .red,
+            attributeName: .blue,
+            attributeValue: .green,
+            font: .systemFont(ofSize: 14)
+        )
+        let textStorage = NSTextStorage(string: sampleHTML)
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        textStorage.addAttribute(.font, value: theme.font, range: fullRange)
+        textStorage.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
+
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(size: NSSize(width: 900, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = false
+        textContainer.lineFragmentPadding = 0
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: textContainer)
+
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let probeRect = NSRect(x: 0, y: max(0, usedRect.midY - 300), width: 900, height: 600)
+        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: probeRect, in: textContainer)
+        let visibleRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
+        return (layoutManager, textContainer, probeRect, visibleRange, theme)
     }
 }
 #endif

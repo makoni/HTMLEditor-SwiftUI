@@ -7,6 +7,10 @@ extension HTMLEditor.Coordinator {
         guard let clipView = notification.object as? NSClipView,
               let scrollView = clipView.enclosingScrollView,
               let textView = scrollView.documentView as? NSTextView else { return }
+        if HTMLEditor.shouldUseScrollIdleMode(forTextLength: textView.textStorage?.length ?? 0) {
+            scheduleScrollIdleHighlighting(textView: textView, scrollView: scrollView)
+            return
+        }
         scheduleVisibleRangeHighlighting(
             textView: textView,
             scrollView: scrollView,
@@ -22,13 +26,14 @@ extension HTMLEditor.Coordinator {
         forceHighlight: Bool = false,
         allowPrewarm: Bool = true,
         trigger: HTMLEditorHighlightTrigger = .scroll,
-        detail: HTMLEditorHighlightDetail = .full
+        detail: HTMLEditorHighlightDetail = .full,
+        overrideDelay: UInt64? = nil
     ) {
         visibleHighlightDebounceTask?.cancel()
 
         visibleHighlightDebounceTask = Task { @MainActor [weak self, weak textView, weak scrollView] in
             do {
-                let delay = HTMLEditor.semanticHighlightDelay(
+                let delay = overrideDelay ?? HTMLEditor.semanticHighlightDelay(
                     forTextLength: textView?.textStorage?.length ?? 0,
                     trigger: trigger
                 )
@@ -87,7 +92,9 @@ extension HTMLEditor.Coordinator {
         let scrollDirection = visibleRange.location - lastVisibleRange.location
         lastVisibleRange = visibleRange
 
-        let needsHighlighting = rangeNeedsHighlighting(visibleRange, forceHighlight: forceHighlight)
+        let textSnapshot = textStorage.string
+        let textNSString = textSnapshot as NSString
+        let needsHighlighting = rangeNeedsHighlighting(visibleRange, text: textNSString, forceHighlight: forceHighlight)
 
         if needsHighlighting {
             let budget = HTMLEditor.highlightBudget(forTextLength: textStorage.length)
@@ -99,7 +106,6 @@ extension HTMLEditor.Coordinator {
                 budget: budget
             )
             let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
-            let textSnapshot = textStorage.string
             let textLength = textStorage.length
             let currentVersion = documentVersion
             let preserveExistingOverlay = HTMLEditor.shouldPreserveVisibleHighlight(
@@ -118,7 +124,7 @@ extension HTMLEditor.Coordinator {
                         replacesVisibleOverlay: true
                     )
                 }
-                recordHighlightedRange(cachedPlan.coveredRange)
+                recordHighlightedRange(cachedPlan.coveredRange, text: textSnapshot as NSString)
                 if allowPrewarm && budget.prewarmEnabled && !forceHighlight {
                     scheduleViewportPrewarm(
                         around: visibleRange,
@@ -158,7 +164,7 @@ extension HTMLEditor.Coordinator {
                             replacesVisibleOverlay: true
                         )
                     }
-                    self.recordHighlightedRange(plan.coveredRange)
+                    self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
                     if allowPrewarm && budget.prewarmEnabled && !forceHighlight {
                         self.scheduleViewportPrewarm(
                             around: visibleRange,
@@ -172,6 +178,39 @@ extension HTMLEditor.Coordinator {
                     }
                 }
             }
+        }
+    }
+
+    @MainActor
+    func scheduleScrollIdleHighlighting(textView: NSTextView, scrollView: NSScrollView) {
+        visibleHighlightDebounceTask?.cancel()
+        visibleHighlightTask?.cancel()
+        prewarmTask?.cancel()
+        scrollIdleTask?.cancel()
+
+        let scheduledVersion = documentVersion
+        let delay = HTMLEditor.semanticHighlightDelay(
+            forTextLength: textView.textStorage?.length ?? 0,
+            trigger: .scroll
+        )
+
+        scrollIdleTask = Task { @MainActor [weak self, weak textView, weak scrollView] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+
+            guard let self, let textView, let scrollView, self.documentVersion == scheduledVersion else { return }
+            self.scheduleVisibleRangeHighlighting(
+                textView: textView,
+                scrollView: scrollView,
+                forceHighlight: true,
+                allowPrewarm: true,
+                trigger: .scroll,
+                detail: .full,
+                overrideDelay: 0
+            )
         }
     }
 
@@ -219,18 +258,20 @@ extension HTMLEditor.Coordinator {
     }
 
     @MainActor
-    func recordHighlightedRange(_ range: NSRange) {
-        highlightCoverage.markHighlighted(range)
+    func recordHighlightedRange(_ range: NSRange, text: NSString) {
+        highlightCoverage.markHighlighted(HTMLEditor.alignedHighlightRange(range, in: text))
     }
 
     @MainActor
-    func rangeNeedsHighlighting(_ range: NSRange, forceHighlight: Bool = false) -> Bool {
+    func rangeNeedsHighlighting(_ range: NSRange, text: NSString, forceHighlight: Bool = false) -> Bool {
+        let alignedRange = HTMLEditor.alignedHighlightRange(range, in: text)
+
         if let dirtyRange = visibleHighlightState.dirtyRange,
-           NSIntersectionRange(range, dirtyRange).length > 0 {
+           NSIntersectionRange(alignedRange, dirtyRange).length > 0 {
             return true
         }
 
-        return highlightCoverage.needsHighlighting(range, force: forceHighlight)
+        return highlightCoverage.needsHighlighting(alignedRange, force: forceHighlight)
     }
 
     @MainActor
@@ -273,7 +314,7 @@ extension HTMLEditor.Coordinator {
             ? [afterRange, nearbyBeforeRange]
             : [beforeRange, nearbyAfterRange]
         let candidates = orderedCandidates.filter {
-            $0.location != NSNotFound && $0.length > 0 && rangeNeedsHighlighting($0)
+            $0.location != NSNotFound && $0.length > 0 && rangeNeedsHighlighting($0, text: textSnapshot as NSString)
         }
         guard !candidates.isEmpty else { return }
 
@@ -300,7 +341,7 @@ extension HTMLEditor.Coordinator {
                           let currentTextStorage = textView.textStorage,
                           self.documentVersion == version,
                           currentTextStorage.length == textLength,
-                          self.rangeNeedsHighlighting(plan.coveredRange) else { return }
+                          self.rangeNeedsHighlighting(plan.coveredRange, text: currentTextStorage.string as NSString) else { return }
                     self.storeCachedPlan(plan, version: version, textLength: textLength)
                     self.performVisibleRangeHighlighting(
                         plan: plan,
@@ -308,7 +349,7 @@ extension HTMLEditor.Coordinator {
                         textStorage: currentTextStorage,
                         replacesVisibleOverlay: false
                     )
-                    self.recordHighlightedRange(plan.coveredRange)
+                    self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
                 }
             }
         }
@@ -377,16 +418,16 @@ extension HTMLEditor.Coordinator {
     func preserveVisibleHighlightAfterEdit(
         textView: NSTextView,
         edit: PendingEdit,
-        newTextLength: Int
+        newTextLength: Int,
+        dirtyRange: NSRange
     ) {
-        let budget = HTMLEditor.highlightBudget(forTextLength: newTextLength)
         let previousVisiblePlan = visibleHighlightState.plan
         guard let textStorage = textView.textStorage,
               let preservedPlan = visibleHighlightState.remapAfterEdit(
                   editRange: edit.affectedRange,
                   replacementUTF16Length: edit.replacementUTF16Length,
                   newTextLength: newTextLength,
-                  dirtyExpansion: budget.visibleExpansion
+                  dirtyRange: dirtyRange
               ) else {
             return
         }
