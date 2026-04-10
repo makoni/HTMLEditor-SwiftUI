@@ -160,11 +160,11 @@ public struct HTMLSyntaxHighlighter {
             return
         }
 
-        for previousSpan in previousPlan.spans {
-            let intersection = NSIntersectionRange(previousSpan.range, plan.coveredRange)
-            guard intersection.location != NSNotFound, intersection.length > 0 else { continue }
-            layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: intersection)
-        }
+        // Clear the full overlap region rather than only the positions listed in
+        // previousPlan.spans.  Temporary highlights applied by prewarm (which are
+        // never tracked in the visible plan's span list) would otherwise survive
+        // the transition and display stale colours on plain-text content.
+        clearTemporaryHighlights(in: layoutManager, range: overlap)
 
         if previousPlan.coveredRange.location > plan.coveredRange.location {
             let leadingRange = NSRange(

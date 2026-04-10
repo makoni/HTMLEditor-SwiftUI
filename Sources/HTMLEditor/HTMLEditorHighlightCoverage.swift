@@ -18,6 +18,15 @@ struct HTMLEditorHighlightCoverage {
         dirtyBlocks.subtract(blocks)
     }
 
+    /// Marks a range as needing re-highlighting.  Use this to invalidate
+    /// prewarm highlights that may have become stale after an edit.
+    mutating func markDirty(_ range: NSRange) {
+        let blocks = Self.blocks(for: range)
+        guard !blocks.isEmpty else { return }
+        dirtyBlocks.formUnion(blocks)
+        cleanBlocks.subtract(blocks)
+    }
+
     mutating func remapAfterEdit(
         editRange: NSRange,
         replacementUTF16Length: Int,

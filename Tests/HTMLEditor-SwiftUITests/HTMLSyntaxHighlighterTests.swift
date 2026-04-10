@@ -185,6 +185,47 @@ import AppKit
     #expect(hasTagHighlighting == true)
 }
 
+@MainActor
+@Test func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme() async throws {
+    let html = "<p>Hello</p>"
+    let theme = makeTestTheme()
+    let editor = HTMLEditor(
+        html: .constant(html),
+        theme: HTMLEditorTheme(light: theme, dark: theme)
+    )
+    let coordinator = HTMLEditor.Coordinator(editor)
+    let scrollView = NSScrollView()
+    let textView = NSTextView()
+    scrollView.documentView = textView
+    textView.string = html
+
+    let plan = HTMLHighlightPlanBuilder.fullPlan(for: html)
+    coordinator.applyFullHighlightPlan(plan, html: html, theme: theme, to: textView, in: scrollView)
+
+    let tagRange = (html as NSString).range(of: "<p>")
+    let plainTextRange = (html as NSString).range(of: "Hello")
+
+    let permanentTagColor = textView.textStorage?.attribute(
+        .foregroundColor,
+        at: tagRange.location,
+        effectiveRange: nil
+    ) as? NSColor
+    let permanentPlainTextColor = textView.textStorage?.attribute(
+        .foregroundColor,
+        at: plainTextRange.location,
+        effectiveRange: nil
+    ) as? NSColor
+    let temporaryTagColor = textView.layoutManager?.temporaryAttribute(
+        .foregroundColor,
+        atCharacterIndex: tagRange.location,
+        effectiveRange: nil
+    ) as? NSColor
+
+    #expect(permanentTagColor == theme.foreground)
+    #expect(permanentPlainTextColor == theme.foreground)
+    #expect(temporaryTagColor == theme.tag)
+}
+
 @Test func testMergedPlanReplacesOverlayRangeWithoutDroppingOutsideSpans() async throws {
     let basePlan = HTMLSyntaxHighlighter.HighlightPlan(
         coveredRange: NSRange(location: 0, length: 30),
@@ -205,4 +246,71 @@ import AppKit
     #expect(merged.spans.contains { $0.range == NSRange(location: 0, length: 5) })
     #expect(merged.spans.contains { $0.range == NSRange(location: 20, length: 5) })
     #expect(merged.spans.contains { $0.range == NSRange(location: 10, length: 4) })
+}
+
+/// Regression test for Bug 1: applyTemporary(plan:replacing:) must clear the
+/// full overlap region, not just positions listed in previousPlan.spans.
+///
+/// A prewarm can paint temporary `attributeName` colour on characters that the
+/// tracked visible plan never recorded as spans (e.g. plain-text runs).  When a
+/// subsequent "replacing" apply arrives for the same region, those untracked
+/// highlights must be erased even though previousPlan.spans is empty for that
+/// position.
+@MainActor
+@Test func testApplyTemporaryReplacingClearsUntrackedPrewarmHighlights() {
+    let html = "<ul>\nCreate, rename\n</ul>"
+    let textStorage = NSTextStorage(string: html)
+    let layoutManager = NSLayoutManager()
+    let textContainer = NSTextContainer(size: CGSize(width: 800, height: CGFloat.greatestFiniteMagnitude))
+    layoutManager.addTextContainer(textContainer)
+    textStorage.addLayoutManager(layoutManager)
+    let theme = makeTestTheme()
+
+    // 1. Prewarm applies attributeName (blue) to "Create, rename" at position 5.
+    //    This simulates a prewarm run that saw a preceding unclosed tag, making
+    //    the plain-text run look like an attribute value.
+    let stalePrewarmSpan = HTMLSyntaxHighlighter.HighlightSpan(
+        range: NSRange(location: 5, length: 14),
+        role: .attributeName
+    )
+    let prewarmPlan = HTMLSyntaxHighlighter.HighlightPlan(
+        coveredRange: NSRange(location: 0, length: html.utf16.count),
+        spans: [stalePrewarmSpan]
+    )
+    HTMLSyntaxHighlighter.applyTemporary(plan: prewarmPlan, to: layoutManager, theme: theme)
+
+    var effectiveRange = NSRange(location: NSNotFound, length: 0)
+    let colorAfterPrewarm = layoutManager.temporaryAttribute(
+        .foregroundColor, atCharacterIndex: 5, effectiveRange: &effectiveRange
+    ) as? NSColor
+    #expect(colorAfterPrewarm == theme.attributeName, "Precondition: prewarm should have set attributeName")
+
+    // 2. The user fixes the HTML. The new visible plan correctly treats position 5
+    //    as plain foreground — there is NO span there.  The previous visible plan
+    //    also had no span at position 5 (it was prewarm-applied, not tracked).
+    let previousPlan = HTMLSyntaxHighlighter.HighlightPlan(
+        coveredRange: NSRange(location: 0, length: html.utf16.count),
+        spans: []   // no tracked span at position 5
+    )
+    let correctedPlan = HTMLSyntaxHighlighter.HighlightPlan(
+        coveredRange: NSRange(location: 0, length: html.utf16.count),
+        spans: []   // position 5 is plain text — no attributeName span
+    )
+
+    HTMLSyntaxHighlighter.applyTemporary(
+        plan: correctedPlan,
+        replacing: previousPlan,
+        to: layoutManager,
+        theme: theme
+    )
+
+    // 3. The stale prewarm attributeName colour must have been cleared by the
+    //    full-overlap clear introduced by the Bug 1 fix.
+    let colorAfterFix = layoutManager.temporaryAttribute(
+        .foregroundColor, atCharacterIndex: 5, effectiveRange: nil
+    ) as? NSColor
+    #expect(
+        colorAfterFix != theme.attributeName,
+        "Stale prewarm attributeName highlight must be cleared by the replacing plan"
+    )
 }

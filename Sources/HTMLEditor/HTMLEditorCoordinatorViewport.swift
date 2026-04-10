@@ -125,7 +125,10 @@ extension HTMLEditor.Coordinator {
                     )
                 }
                 recordHighlightedRange(cachedPlan.coveredRange, text: textSnapshot as NSString)
-                if allowPrewarm && budget.prewarmEnabled && !forceHighlight {
+                // Allow prewarm regardless of forceHighlight: an edit-triggered forced
+                // re-highlight marks the prewarm zone dirty (see textDidChange), so
+                // prewarm must run to re-apply correct highlights there.
+                if allowPrewarm && budget.prewarmEnabled {
                     scheduleViewportPrewarm(
                         around: visibleRange,
                         direction: scrollDirection,
@@ -165,7 +168,8 @@ extension HTMLEditor.Coordinator {
                         )
                     }
                     self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
-                    if allowPrewarm && budget.prewarmEnabled && !forceHighlight {
+                    // Allow prewarm regardless of forceHighlight (see comment above).
+                    if allowPrewarm && budget.prewarmEnabled {
                         self.scheduleViewportPrewarm(
                             around: visibleRange,
                             direction: scrollDirection,

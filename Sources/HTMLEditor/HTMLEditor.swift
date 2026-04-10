@@ -57,10 +57,7 @@ public struct HTMLEditor: NSViewRepresentable {
         scrollView.horizontalScrollElasticity = .none
 
         HTMLSyntaxHighlighter.applyThemeBase(to: textView, theme: currentTheme)
-        if html.utf16.count <= HTMLSyntaxHighlighter.maxHighlightLength,
-           let layoutManager = textView.layoutManager {
-            let highlighted = HTMLSyntaxHighlighter.highlight(html: html, theme: currentTheme)
-            textView.textStorage?.setAttributedString(highlighted)
+        if let layoutManager = textView.layoutManager {
             HTMLSyntaxHighlighter.clearTemporaryHighlights(
                 in: layoutManager,
                 range: NSRange(location: 0, length: html.utf16.count)
@@ -77,6 +74,11 @@ public struct HTMLEditor: NSViewRepresentable {
             container.lineFragmentPadding = 0
             container.maximumNumberOfLines = 0
         }
+        context.coordinator.performFullHighlighting(
+            html: html,
+            theme: currentTheme,
+            textView: textView
+        )
         return scrollView
     }
 
@@ -201,6 +203,17 @@ public struct HTMLEditor: NSViewRepresentable {
                     newTextLength: newLength,
                     dirtyRange: structuralDirtyRange
                 )
+                // Mark everything beyond the current visible plan as dirty so the
+                // prewarm scheduled after the edit-triggered re-highlight will
+                // re-check those blocks.  This prevents stale prewarm highlights
+                // (applied for the pre-edit document state) from persisting at
+                // positions the edit-triggered re-highlight does not reach.
+                if let visiblePlanEnd = visibleHighlightState.plan.map({ NSMaxRange($0.coveredRange) }),
+                   visiblePlanEnd < newLength {
+                    highlightCoverage.markDirty(
+                        NSRange(location: visiblePlanEnd, length: newLength - visiblePlanEnd)
+                    )
+                }
                 scheduleDirtyBlockHighlightAfterEdit(
                     textView: textView,
                     newTextLength: newLength
