@@ -37,16 +37,24 @@ extension HTMLEditor.Coordinator {
         textView: NSTextView,
         newTextLength: Int
     ) {
-        guard HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: newTextLength),
-              let dirtyRange = visibleHighlightState.dirtyRange else {
+        guard let dirtyRange = visibleHighlightState.dirtyRange else {
             return
         }
 
-        let immediateRange = HTMLEditor.localDirtyHighlightRange(
-            around: dirtyRange,
-            textLength: newTextLength,
-            maxLength: HTMLEditor.immediateEditHighlightLimit(forTextLength: newTextLength)
-        )
+        let immediateRange: NSRange
+        if HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: newTextLength) {
+            immediateRange = HTMLEditor.localDirtyHighlightRange(
+                around: dirtyRange,
+                textLength: newTextLength,
+                maxLength: HTMLEditor.immediateEditHighlightLimit(forTextLength: newTextLength)
+            )
+        } else {
+            // Small documents keep full detail while typing, so re-highlight the
+            // structural dirty range immediately instead of leaving a brief plain
+            // text gap until the delayed visible-range pass catches up.
+            immediateRange = dirtyRange
+        }
+
         applyLocalDirtyHighlight(in: immediateRange, textView: textView)
     }
 
