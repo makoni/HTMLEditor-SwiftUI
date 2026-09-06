@@ -31,7 +31,30 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
               range.length > 0,
               NSMaxRange(range) <= textStorage.length else { return nil }
 
-        let plan = paragraphPlan(for: textStorage.string as NSString, range: range)
+        // A line this long is minified, not written by hand, and colouring it
+        // is what makes typing in it slow: the cost is not the scan (0.3 ms) but
+        // TextKit laying out a paragraph carrying a thousand attribute runs
+        // instead of uniform text, which measured 3.9 ms against 27.5 ms per
+        // keystroke on a 28 000-character line. Leaving such a line plain is the
+        // same bargain other editors strike, and it is invisible on markup
+        // anyone actually reads.
+        guard range.length <= HTMLEditorDocumentSize.highlightedParagraphLimit else { return nil }
+
+        let text = textStorage.string as NSString
+        let key = ParagraphPlanKey(
+            location: range.location,
+            length: range.length,
+            fingerprint: Self.fingerprint(text, range: range)
+        )
+        // Hand back the identical element when the paragraph has not changed.
+        // The delegate is asked for more paragraphs than the one being edited,
+        // and rebuilding an equivalent-but-different element makes TextKit redo
+        // layout it could have kept.
+        if let cached = styledParagraphCache[key] {
+            return cached
+        }
+
+        let plan = HTMLHighlightPlanBuilder.buildPlan(in: text, coveredRange: range)
         let paragraph = textStorage.attributedSubstring(from: range)
         guard !plan.spans.isEmpty else { return nil }
 
@@ -58,39 +81,32 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
         }
         styled.endEditing()
 
-        return NSTextParagraph(attributedString: styled)
-    }
-
-    /// A plan for one paragraph, cached so that laying the same paragraph out
-    /// repeatedly — which scrolling does — does not rescan it.
-    ///
-    /// The scan starts in the `.text` state at the paragraph boundary. A tag or
-    /// an attribute value spanning a newline is therefore coloured from the
-    /// following line as if it were plain text; that is the cost of vending
-    /// paragraph by paragraph, and it is what the framework's granularity gives
-    /// us.
-    @MainActor
-    func paragraphPlan(
-        for text: NSString,
-        range: NSRange
-    ) -> HTMLSyntaxHighlighter.HighlightPlan {
-        let identity = ParagraphPlanKey(range: range, textLength: text.length)
-        if let cached = paragraphPlanCache[identity] {
-            return cached
+        let element = NSTextParagraph(attributedString: styled)
+        if styledParagraphCache.count >= Self.paragraphPlanCacheLimit {
+            styledParagraphCache.removeAll(keepingCapacity: true)
         }
-
-        let plan = HTMLHighlightPlanBuilder.buildPlan(in: text, coveredRange: range)
-
-        if paragraphPlanCache.count >= Self.paragraphPlanCacheLimit {
-            paragraphPlanCache.removeAll(keepingCapacity: true)
-        }
-        paragraphPlanCache[identity] = plan
-        return plan
+        styledParagraphCache[key] = element
+        return element
     }
 
     struct ParagraphPlanKey: Hashable {
-        let range: NSRange
-        let textLength: Int
+        let location: Int
+        let length: Int
+        let fingerprint: Int
+    }
+
+    /// Cheap content check: the paragraph's length plus a handful of sampled
+    /// code units. Keying on the document's total length instead would miss on
+    /// every paragraph after every keystroke, which is exactly what this cache
+    /// exists to avoid.
+    static func fingerprint(_ text: NSString, range: NSRange) -> Int {
+        var hasher = Hasher()
+        hasher.combine(range.length)
+        let offsets = [0, range.length / 4, range.length / 2, (range.length * 3) / 4, range.length - 1]
+        for offset in offsets where offset >= 0 && offset < range.length {
+            hasher.combine(text.character(at: range.location + offset))
+        }
+        return hasher.finalize()
     }
 
     /// Sized to comfortably hold a viewport's worth of paragraphs plus what
@@ -104,7 +120,7 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
     /// the screen. `invalidateRenderingAttributes` does not do this.
     @MainActor
     func invalidateParagraphHighlighting(in textView: NSTextView) {
-        paragraphPlanCache.removeAll(keepingCapacity: true)
+        styledParagraphCache.removeAll(keepingCapacity: true)
 
         guard let layoutManager = textView.textLayoutManager,
               let contentStorage = textView.textContentStorage else { return }

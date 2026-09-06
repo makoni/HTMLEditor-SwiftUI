@@ -23,6 +23,14 @@ enum HTMLEditorDocumentSize {
 
     /// Lower edge of the hysteresis band for the non-contiguous layout switch.
     static let nonContiguousLayoutOff = 40_000
+
+    /// Longest paragraph that still gets syntax colouring.
+    ///
+    /// Well above anything hand-written — a formatted HTML line is rarely past a
+    /// few hundred units — and below the minified runs that make typing crawl.
+    static let highlightedParagraphLimit = Int(
+        ProcessInfo.processInfo.environment["HTMLEDITOR_PARAGRAPH_LIMIT"] ?? ""
+    ) ?? 6_000
 }
 
 /// How big the edit was.  Deliberately independent of document size: the two

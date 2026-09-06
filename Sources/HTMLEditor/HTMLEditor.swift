@@ -187,7 +187,7 @@ public struct HTMLEditor: NSViewRepresentable {
         /// Running it anyway is pure main-thread work competing with drawing.
         var usesPulledHighlighting = false
         /// Per-paragraph plans for the TextKit 2 pull-based path.
-        var paragraphPlanCache: [ParagraphPlanKey: HTMLSyntaxHighlighter.HighlightPlan] = [:]
+        var styledParagraphCache: [ParagraphPlanKey: NSTextParagraph] = [:]
 
         init(_ parent: HTMLEditor) {
             self.parent = parent

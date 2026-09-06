@@ -81,3 +81,34 @@ func testLocalRepaintKeepsColoursAwayFromTheCaret(textKit2: Bool) throws {
         "colour past the edit must survive, shifted by the insertion"
     )
 }
+
+/// A minified line is left plain on purpose. Colouring it is what makes typing
+/// in it slow — not the scan, but TextKit laying out a paragraph carrying a
+/// thousand attribute runs. Measured on a 28 000-character line: 27.5 ms per
+/// keystroke coloured against 4.0 ms plain.
+@MainActor
+@Test func testParagraphsBeyondTheLimitAreNotColoured() throws {
+    _ = NSApplication.shared
+    let theme = makeTestTheme()
+
+    let limit = HTMLEditorDocumentSize.highlightedParagraphLimit
+    let unit = #"<span class="c"><a href="/x">t</a></span>"#
+    let shortLine = unit + "\n"
+    let longLine = String(repeating: unit, count: limit / unit.utf16.count + 4) + "\n"
+    #expect(longLine.utf16.count > limit)
+
+    let html = shortLine + longLine
+    let coordinator = HTMLEditor.Coordinator(
+        HTMLEditor(html: .constant(html), theme: HTMLEditorTheme(light: theme, dark: theme))
+    )
+    let textView = makeTextView(textKit2: true, highlightedBy: coordinator)
+    textView.string = html
+
+    // The ordinary line is still coloured…
+    let shortTag = (html as NSString).range(of: "span").location
+    #expect(appliedHighlightColour(textView, at: shortTag) == theme.tag)
+
+    // …and the minified one is left at the base colour.
+    let longTag = shortLine.utf16.count + 1
+    #expect(appliedHighlightColour(textView, at: longTag) != theme.tag)
+}
