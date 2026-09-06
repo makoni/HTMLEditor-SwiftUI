@@ -7,7 +7,16 @@ import AppKit
 /// than the narrower path a benchmark can reach.
 ///
 /// Enabled with `HTMLEDITOR_AUTOTYPE_MS=<interval>`; `HTMLEDITOR_AUTOTYPE_WHERE`
-/// picks `longline` (default) or `mid`.
+/// picks `longline` (default) or `mid`, and `HTMLEDITOR_AUTOTYPE_TEXT` chooses
+/// what to type: `plain` for letters, or `html` (default) for markup typed one
+/// character at a time.
+///
+/// The distinction matters more than anything else measured here. A letter
+/// changes one character's colour. Typing `<a href="` opens a tag and then an
+/// unterminated quoted value, so on each keystroke the *entire rest of the
+/// paragraph* is reinterpreted — a 28 000-character line stops being a thousand
+/// small spans and becomes one enormous attribute value — and TextKit has to
+/// restyle and re-lay out all of it.
 ///
 /// Delete once the TextKit question is settled.
 enum HTMLEditorAutoTypeDiagnostic {
@@ -34,9 +43,23 @@ enum HTMLEditorAutoTypeDiagnostic {
             // timers coalesced by the system, which showed up as half-second
             // gaps that had nothing to do with the editor.
             NSApp.activate(ignoringOtherApps: true)
+
+            let snippet: String
+            switch ProcessInfo.processInfo.environment["HTMLEDITOR_AUTOTYPE_TEXT"] {
+            case "plain":
+                snippet = String(repeating: "x", count: 120)
+            case "unclosed":
+                // The worst shape: the quote is never closed, so from the second
+                // keystroke onwards the whole rest of the paragraph parses as one
+                // attribute value and is restyled on every character.
+                snippet = #"<a href="https://example.com/some/fairly/long/path/for/testing"#
+            default:
+                snippet = String(repeating: #"<a href="https://example.com/page">link</a>"#, count: 3)
+            }
+
             let state = TypingState()
-            for _ in 0..<120 {
-                state.step(textView: textView, settle: millis / 1000)
+            for character in snippet {
+                state.step(textView: textView, typing: String(character), settle: millis / 1000)
             }
             state.finish()
         }
@@ -51,11 +74,11 @@ enum HTMLEditorAutoTypeDiagnostic {
         private var settleTotal: Double = 0
         private var settleWorst: Double = 0
 
-        func step(textView: NSTextView, settle: Double) {
+        func step(textView: NSTextView, typing text: String, settle: Double) {
             let selected = textView.selectedRange()
 
             let start = DispatchTime.now().uptimeNanoseconds
-            textView.insertText("x", replacementRange: selected)
+            textView.insertText(text, replacementRange: selected)
             let inserted = DispatchTime.now().uptimeNanoseconds
 
             // Everything the keystroke set in motion — layout, drawing, the
@@ -76,8 +99,9 @@ enum HTMLEditorAutoTypeDiagnostic {
             if insertMS > worst { worst = insertMS }
             if settleMS > settleWorst { settleWorst = settleMS }
 
-            if typed % 40 == 0 {
-                NSLog("AUTOTYPE #%d insert %.2fms settle-overrun %.2fms", typed, insertMS, settleMS)
+            if insertMS + settleMS > 12 || typed % 20 == 0 {
+                NSLog("AUTOTYPE #%d '%@' insert %.2fms settle %.2fms",
+                      typed, text, insertMS, settleMS)
             }
         }
 

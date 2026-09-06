@@ -40,10 +40,21 @@ public struct HTMLEditor: NSViewRepresentable {
         }
         textView.usesRuler = false
         textView.isRulerVisible = false
+        // Every one of these is wrong for markup, and several of them do work
+        // proportional to what you type rather than to how much you typed.
+        // Link detection in particular scans as you write a URL — exactly what
+        // `href="https://..."` is — which is why typing markup could feel slower
+        // than typing the same number of letters.
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.smartInsertDeleteEnabled = false
+        textView.isIncrementalSearchingEnabled = false
         textView.drawsBackground = true
         textView.textContainer?.widthTracksTextView = true
 
