@@ -50,7 +50,7 @@
 ### Swift Package Manager
 
 ```swift
-.package(url: "https://github.com/makoni/HTMLEditor-SwiftUI.git", from: "1.1.0")
+.package(url: "https://github.com/makoni/HTMLEditor-SwiftUI.git", from: "1.2.0")
 ```
 
 ## Basic Usage
@@ -130,6 +130,11 @@ To benchmark a specific HTML file:
 ```bash
 HTML_EDITOR_BENCHMARK_HTML=/path/to/file.html swift run HTMLEditorBenchmarks
 ```
+
+Without a file, input is generated with the shapes that stress the pipeline —
+long lines, non-ASCII text, inline `<style>` and `<script>`. `HTML_EDITOR_BENCHMARK_LENGTH`
+sets its size in UTF-16 units, and `HTML_EDITOR_BENCHMARK_KEYSTROKE=1` adds a
+measurement of the real per-keystroke edit path.
 
 ## Demo App
 
