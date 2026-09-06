@@ -26,7 +26,7 @@ Guidance for AI coding agents working in this repository.
 
 - `HTMLSyntaxHighlighterPlanBuilder.swift` holds the scanner: a UTF-16 state machine (`text`, `tagName`, `insideTag`, `quotedAttributeValue(quote)`, …) that walks the document in 512-unit chunks and emits `HighlightSpan` values tagged `tag`, `attributeName`, or `attributeValue`.
 - `HTMLSyntaxHighlighterPlanner.swift` is an `actor` with a two-level LRU cache: range plans (cap 24) and chunk results (cap 192), both keyed by document ID, text length, range, and a sampled fingerprint. Chunks that both start and end in the `.text` state are marked context-independent and can be reused even when the incoming scanner state differs. Length-changing edits shift downstream cache entries instead of clearing everything.
-- `HTMLSyntaxHighlighter.swift` applies plans. `highlight(html:theme:)` is the public synchronous full-document pass; `highlightRange(in:range:theme:expandedRange:)` is the public incremental path. Internally the coordinator uses the async planner-backed variants.
+- `HTMLSyntaxHighlighter.swift` applies plans. `highlight(html:theme:)` is the public synchronous full-document pass. `highlightRange(in:range:theme:expandedRange:)` is public but deprecated — it writes into `NSTextStorage` directly. The coordinator uses the async planner-backed variants.
 - Highlighting is applied as **temporary attributes on `NSLayoutManager`**, not as attributes on `NSTextStorage`. This keeps undo intact and avoids re-entrant `textDidChange`. Only the base font/foreground live in text storage. Do not "simplify" this into direct text-storage attribute writes.
 
 ### Policies and support types
