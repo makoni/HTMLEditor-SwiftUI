@@ -6,13 +6,21 @@ import HTMLEditor
 struct HTMLEditorBenchmarks {
     static func main() async throws {
         let html = try loadBenchmarkHTML()
+        // The truncated sample keeps the full-semantic regime measurable; the
+        // unmodified document is what exercises the large-document paths.
         let sample = String(html.prefix(45_000))
 
-        let samples = await HTMLEditorBenchmarkSupport.runDefaultBenchmarks(sampleHTML: sample)
+        print("document: \(html.utf16.count) UTF-16 units, sample: \(sample.utf16.count)")
+
+        let samples = await HTMLEditorBenchmarkSupport.runDefaultBenchmarks(
+            sampleHTML: sample,
+            largeHTML: html
+        )
 
         for sample in samples {
             print(
                 "\(sample.label): avg=\(format(sample.averageMilliseconds))ms " +
+                "p50=\(format(sample.medianMilliseconds))ms " +
                 "min=\(format(sample.minimumMilliseconds))ms " +
                 "max=\(format(sample.maximumMilliseconds))ms"
             )
@@ -37,7 +45,9 @@ struct HTMLEditorBenchmarks {
 
     private static func syntheticBenchmarkHTML() -> String {
         let row = #"<div class="row" data-id="123"><a href="https://example.com/item">plain text</a><span>value</span></div>"#
-        return String(repeating: row + "\n", count: 700)
+        // Large enough to reach the >150_000 conservative regime, so the suite
+        // covers all three size regimes without an external file.
+        return String(repeating: row + "\n", count: 10_000)
     }
 
     private static func format(_ value: Double) -> String {

@@ -5,13 +5,23 @@ import Foundation
 public struct HTMLEditorBenchmarkResult: Sendable {
     public let label: String
     public let averageMilliseconds: Double
+    public let medianMilliseconds: Double
     public let minimumMilliseconds: Double
     public let maximumMilliseconds: Double
 }
 
 public enum HTMLEditorBenchmarkSupport {
-    public static func runDefaultBenchmarks(sampleHTML: String) async -> [HTMLEditorBenchmarkResult] {
-        await [
+    /// Runs the benchmark suite.
+    ///
+    /// `sampleHTML` stays below `HTMLSyntaxHighlighter.maxHighlightLength` so the
+    /// full-semantic regime is measured.  `largeHTML` is the caller's unmodified
+    /// input and exercises the viewport-first and conservative regimes, which the
+    /// suite never reached while every benchmark ran against a truncated sample.
+    public static func runDefaultBenchmarks(
+        sampleHTML: String,
+        largeHTML: String
+    ) async -> [HTMLEditorBenchmarkResult] {
+        var results = await [
             benchmarkPlannedFull(sampleHTML),
             benchmarkOverlap(sampleHTML),
             benchmarkSameLengthEdit(sampleHTML),
@@ -19,13 +29,30 @@ public enum HTMLEditorBenchmarkSupport {
             benchmarkContextIndependentReuse(),
             benchmarkVisibleHighlightRemap(sampleHTML),
             benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 256),
-            benchmarkDirtyBlockLocalPass(sampleHTML),
-            benchmarkLayoutVisibleRangeMap(sampleHTML),
-            benchmarkApplyTemporaryVisiblePlan(sampleHTML),
             benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 512),
             benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 768),
             benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 1_024)
         ]
+
+        results += await MainActor.run {
+            [
+                benchmarkLayoutVisibleRangeMap(sampleHTML),
+                benchmarkApplyTemporaryVisiblePlan(sampleHTML)
+            ]
+        }
+
+        results += await [
+            benchmarkCoverageRemap(textLength: 200_000),
+            benchmarkCoverageRemap(textLength: 1_000_000),
+            benchmarkCoverageRemap(textLength: 2_000_000),
+            benchmarkNormalizedRange(largeHTML, label: "as-supplied"),
+            benchmarkNormalizedRange(minified(largeHTML), label: "minified"),
+            benchmarkLargeDocumentRangePlan(largeHTML),
+            benchmarkKeystrokeLocalPass(largeHTML, label: "as-supplied"),
+            benchmarkKeystrokeLocalPass(minified(largeHTML), label: "minified")
+        ]
+
+        return results
     }
 
     private static func benchmarkPlannedFull(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
@@ -154,10 +181,6 @@ public enum HTMLEditorBenchmarkSupport {
         }
     }
 
-    private static func benchmarkDirtyBlockLocalPass(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
-        await benchmarkDirtyBlockLocalPass(sampleHTML, localLength: 1_024)
-    }
-
     private static func benchmarkDirtyBlockLocalPass(
         _ sampleHTML: String,
         localLength: Int
@@ -181,24 +204,101 @@ public enum HTMLEditorBenchmarkSupport {
         }
     }
 
-    private static func benchmarkLayoutVisibleRangeMap(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+    /// Cost of `HTMLEditorHighlightCoverage.remapAfterEdit` for a document that has
+    /// been scrolled end to end, which is the shape that makes the remap expensive.
+    private static func benchmarkCoverageRemap(textLength: Int) async -> HTMLEditorBenchmarkResult {
+        let editRange = NSRange(location: textLength / 2, length: 0)
+        let dirtyRange = HTMLEditorVisibleHighlightState.dirtyRange(
+            for: editRange,
+            replacementLength: 1,
+            newTextLength: textLength,
+            expansion: 200
+        )
+        var scrolled = HTMLEditorHighlightCoverage()
+        scrolled.markHighlighted(NSRange(location: 0, length: textLength))
+        let baseline = scrolled
+
+        return await measure(label: "bench-coverage-remap-\(textLength)", iterations: 25) {
+            var coverage = baseline
+            coverage.remapAfterEdit(
+                editRange: editRange,
+                replacementUTF16Length: 1,
+                newTextLength: textLength,
+                dirtyRange: dirtyRange
+            )
+        }
+    }
+
+    /// `normalizedRange` snaps short ranges to line boundaries, so a document with
+    /// no newlines expands to its full length.  Measuring both shapes keeps that
+    /// difference visible.
+    private static func benchmarkNormalizedRange(_ html: String, label: String) async -> HTMLEditorBenchmarkResult {
+        let requestedRange = NSRange(location: max(0, html.utf16.count / 2), length: 256)
+
+        return await measure(label: "bench-normalized-range-\(label)", iterations: 25) {
+            _ = HTMLHighlightPlanBuilder.normalizedRange(for: html, requestedRange: requestedRange)
+        }
+    }
+
+    private static func benchmarkLargeDocumentRangePlan(_ html: String) async -> HTMLEditorBenchmarkResult {
+        let documentID = UUID()
+        let requestedRange = NSRange(location: max(0, html.utf16.count / 2), length: 2_048)
+
+        return await measure(label: "bench-large-doc-range-plan", iterations: 25) {
+            _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
+                documentID: documentID,
+                text: html,
+                requestedRange: requestedRange
+            )
+        }
+    }
+
+    /// The synchronous work `applyLocalDirtyHighlight` performs on the main thread
+    /// for a single inserted character.
+    private static func benchmarkKeystrokeLocalPass(_ html: String, label: String) async -> HTMLEditorBenchmarkResult {
+        let textLength = html.utf16.count
+        let editRange = NSRange(location: max(0, textLength / 2), length: 0)
+        let dirtyRange = HTMLEditor.structuralDirtyRange(
+            for: editRange,
+            replacementLength: 1,
+            in: html as NSString,
+            expansion: HTMLEditor.highlightBudget(forTextLength: textLength).visibleExpansion
+        )
+        let localRange = HTMLEditor.localDirtyHighlightRange(
+            around: dirtyRange,
+            textLength: textLength,
+            maxLength: HTMLEditor.immediateEditHighlightLimit(forTextLength: textLength)
+        )
+
+        return await measure(label: "bench-keystroke-local-pass-\(label)", iterations: 25) {
+            let localPlan = HTMLHighlightPlanBuilder.rangePlan(for: html, requestedRange: localRange)
+            _ = HTMLSyntaxHighlighter.clippedPlan(localPlan, to: localRange)
+        }
+    }
+
+    private static func minified(_ html: String) -> String {
+        html
+            .replacingOccurrences(of: "\r\n", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+    }
+
+    @MainActor
+    private static func benchmarkLayoutVisibleRangeMap(_ sampleHTML: String) -> HTMLEditorBenchmarkResult {
         let runtime = makeRuntimeProbe(sampleHTML)
 
-        return await measure(label: "bench-layout-visible-range-map", iterations: 100) {
+        return measureSync(label: "bench-layout-visible-range-map", iterations: 100) {
             let glyphRange = runtime.layoutManager.glyphRange(forBoundingRect: runtime.probeRect, in: runtime.textContainer)
             _ = runtime.layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
         }
     }
 
-    private static func benchmarkApplyTemporaryVisiblePlan(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
+    @MainActor
+    private static func benchmarkApplyTemporaryVisiblePlan(_ sampleHTML: String) -> HTMLEditorBenchmarkResult {
         let runtime = makeRuntimeProbe(sampleHTML)
-        let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: UUID(),
-            text: sampleHTML,
-            requestedRange: runtime.visibleRange
-        )
+        let plan = HTMLHighlightPlanBuilder.rangePlan(for: sampleHTML, requestedRange: runtime.visibleRange)
 
-        return await measure(label: "bench-apply-temporary-visible-plan", iterations: 100) {
+        return measureSync(label: "bench-apply-temporary-visible-plan-\(plan.spans.count)-spans", iterations: 100) {
             HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: runtime.layoutManager, theme: runtime.theme)
         }
     }
@@ -218,12 +318,45 @@ public enum HTMLEditorBenchmarkSupport {
             samples.append(Double(end - start) / 1_000_000)
         }
 
-        let average = samples.reduce(0, +) / Double(samples.count)
+        return result(label: label, samples: samples)
+    }
+
+    private static func measureSync(
+        label: String,
+        iterations: Int,
+        block: () -> Void
+    ) -> HTMLEditorBenchmarkResult {
+        var samples: [Double] = []
+        samples.reserveCapacity(iterations)
+
+        for _ in 0..<iterations {
+            let start = DispatchTime.now().uptimeNanoseconds
+            block()
+            let end = DispatchTime.now().uptimeNanoseconds
+            samples.append(Double(end - start) / 1_000_000)
+        }
+
+        return result(label: label, samples: samples)
+    }
+
+    private static func result(label: String, samples: [Double]) -> HTMLEditorBenchmarkResult {
+        guard !samples.isEmpty else {
+            return HTMLEditorBenchmarkResult(
+                label: label,
+                averageMilliseconds: 0,
+                medianMilliseconds: 0,
+                minimumMilliseconds: 0,
+                maximumMilliseconds: 0
+            )
+        }
+
+        let sorted = samples.sorted()
         return HTMLEditorBenchmarkResult(
             label: label,
-            averageMilliseconds: average,
-            minimumMilliseconds: samples.min() ?? 0,
-            maximumMilliseconds: samples.max() ?? 0
+            averageMilliseconds: samples.reduce(0, +) / Double(samples.count),
+            medianMilliseconds: sorted[sorted.count / 2],
+            minimumMilliseconds: sorted[0],
+            maximumMilliseconds: sorted[sorted.count - 1]
         )
     }
 
@@ -233,6 +366,7 @@ public enum HTMLEditorBenchmarkSupport {
         return mutable as String
     }
 
+    @MainActor
     private static func makeRuntimeProbe(_ sampleHTML: String) -> (
         layoutManager: NSLayoutManager,
         textContainer: NSTextContainer,
