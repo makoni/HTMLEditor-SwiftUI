@@ -99,10 +99,24 @@ extension HTMLEditor.Coordinator {
         let currentVersion = documentVersion
         fullHighlightTask?.cancel()
 
-        if html.utf16.count > 50_000 {
+        if html.utf16.count > HTMLSyntaxHighlighter.maxHighlightLength {
             cachedFullHighlightPlan = nil
             cachedFullHighlightVersion = nil
             applyPlainTextResult(html: html, to: textView, in: scrollView)
+            // applyPlainTextResult strips every temporary attribute and resets
+            // the coverage bookkeeping, so without this the document is left
+            // plain.  Nothing else would come along to fix it: a light/dark
+            // switch changes no bounds, so no scroll notification fires, and
+            // updateNSView short-circuits because the html is unchanged.  Large
+            // documents lost their colours on an appearance change and only got
+            // them back once the user scrolled or typed.
+            scheduleVisibleRangeHighlighting(
+                textView: textView,
+                scrollView: scrollView,
+                forceHighlight: true,
+                trigger: .scroll,
+                detail: .full
+            )
             return
         }
 
@@ -196,7 +210,11 @@ extension HTMLEditor.Coordinator {
             )
         }
 
-        textView.string = html
+        // Reassigning identical text relays out the whole document and drops the
+        // undo stack; on an appearance change the text has not moved at all.
+        if textView.string != html {
+            textView.string = html
+        }
         highlightCoverage.clear()
         visibleHighlightState.clear()
 

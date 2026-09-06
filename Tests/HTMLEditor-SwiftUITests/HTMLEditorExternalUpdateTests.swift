@@ -100,3 +100,33 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
     coordinator.applyColorSchemeChangeIfNeeded(textView: textView)
     #expect(coordinator.appliedColorScheme == second)
 }
+
+@MainActor
+@Test func testLargeDocumentAppearanceChangeQueuesRehighlighting() throws {
+    _ = NSApplication.shared
+
+    // Above maxHighlightLength there is never a cached full plan, so an
+    // appearance change always lands in the plain-text path.  That path clears
+    // every temporary attribute; it must leave a highlight pass queued or the
+    // document stays plain until the user scrolls or types.
+    let row = "<p class=\"a\">text</p>\n"
+    let html = String(repeating: row, count: 4_000)
+    #expect(html.utf16.count > HTMLSyntaxHighlighter.maxHighlightLength)
+
+    let coordinator = makeCoordinator(displaying: html)
+    let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    textView.string = html
+    scrollView.documentView = textView
+
+    coordinator.visibleHighlightDebounceTask?.cancel()
+    coordinator.visibleHighlightDebounceTask = nil
+
+    coordinator.performFullHighlighting(
+        html: html,
+        theme: makeTestTheme(),
+        textView: textView
+    )
+
+    #expect(coordinator.visibleHighlightDebounceTask != nil)
+}

@@ -97,6 +97,12 @@ extension HTMLEditor.Coordinator {
         let needsHighlighting = rangeNeedsHighlighting(visibleRange, text: textNSString, forceHighlight: forceHighlight)
 
         if needsHighlighting {
+            // Cancel before the cache lookup, not just on the miss path.  A task
+            // started for an earlier viewport otherwise survives a cache hit,
+            // resumes with documentVersion unchanged, and repaints the current
+            // viewport with spans belonging to a region that has scrolled away.
+            visibleHighlightTask?.cancel()
+
             let budget = HTMLEditor.highlightBudget(forTextLength: textStorage.length)
             let expandedRange = expandedHighlightRange(
                 for: visibleRange,
@@ -123,8 +129,11 @@ extension HTMLEditor.Coordinator {
                         textStorage: textStorage,
                         replacesVisibleOverlay: true
                     )
+                    // Only claim coverage for text that was actually repainted;
+                    // marking a deliberately-stale region clean would stop it
+                    // ever being revisited.
+                    recordHighlightedRange(cachedPlan.coveredRange, text: textSnapshot as NSString)
                 }
-                recordHighlightedRange(cachedPlan.coveredRange, text: textSnapshot as NSString)
                 // Allow prewarm regardless of forceHighlight: an edit-triggered forced
                 // re-highlight marks the prewarm zone dirty (see textDidChange), so
                 // prewarm must run to re-apply correct highlights there.
@@ -142,7 +151,6 @@ extension HTMLEditor.Coordinator {
                 return
             }
 
-            visibleHighlightTask?.cancel()
             visibleHighlightTask = Task { [weak self, weak textView] in
                 guard let self else { return }
                 let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
@@ -166,8 +174,8 @@ extension HTMLEditor.Coordinator {
                             textStorage: currentTextStorage,
                             replacesVisibleOverlay: true
                         )
+                        self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
                     }
-                    self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
                     // Allow prewarm regardless of forceHighlight (see comment above).
                     if allowPrewarm && budget.prewarmEnabled {
                         self.scheduleViewportPrewarm(

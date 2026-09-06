@@ -247,14 +247,6 @@ public struct HTMLEditor: NSViewRepresentable {
                 self.pendingEdit = nil
             }
 
-            if strategy == .majorChange || strategy == .largeDocument {
-                cachedRangePlans.removeAll()
-                lastVisibleRange = NSRange(location: 0, length: 0)
-                Task {
-                    await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
-                }
-            }
-
             scheduleBindingSync(for: newText)
 
             guard let scrollView = textView.enclosingScrollView else { return }

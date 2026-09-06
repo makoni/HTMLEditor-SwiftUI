@@ -205,6 +205,22 @@ public struct HTMLSyntaxHighlighter {
 
     static func mergedPlan(base: HighlightPlan, overlay: HighlightPlan) -> HighlightPlan {
         let overlayRange = overlay.coveredRange
+
+        // A HighlightPlan describes its coverage as one range, and callers clear
+        // that whole range before applying the spans.  Unioning two ranges that
+        // do not touch would therefore claim — and wipe — the untouched text
+        // between them, including prewarm colours that are painted but never
+        // recorded as spans.  Keep the overlay alone in that case: what the base
+        // already painted stays on screen because nothing clears it, and the
+        // debounced visible-range pass scheduled after every edit restores the
+        // full picture.
+        if base.coveredRange.length > 0,
+           overlayRange.length > 0,
+           NSMaxRange(base.coveredRange) < overlayRange.location
+            || NSMaxRange(overlayRange) < base.coveredRange.location {
+            return overlay
+        }
+
         let retainedBaseSpans = base.spans.filter {
             NSIntersectionRange($0.range, overlayRange).length == 0
         }
