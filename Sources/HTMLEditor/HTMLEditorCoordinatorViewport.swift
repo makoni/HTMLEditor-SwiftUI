@@ -157,9 +157,8 @@ extension HTMLEditor.Coordinator {
 
             visibleHighlightTask = Task { [weak self, weak textView] in
                 guard let self else { return }
-                let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                    documentID: self.plannerDocumentID,
-                    text: textSnapshot,
+                let plan = await self.planner.rangePlan(
+                    for: textSnapshot,
                     requestedRange: expandedRange
                 )
                 guard !Task.isCancelled else { return }
@@ -376,9 +375,8 @@ extension HTMLEditor.Coordinator {
 
             for candidate in candidates {
                 guard !Task.isCancelled else { return }
-                let plan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                    documentID: self.plannerDocumentID,
-                    text: textSnapshot,
+                let plan = await self.planner.rangePlan(
+                    for: textSnapshot,
                     requestedRange: candidate
                 )
                 guard !Task.isCancelled else { return }

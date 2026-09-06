@@ -21,7 +21,6 @@ public enum HTMLSyntaxHighlighter {
         let spans: [HighlightSpan]
     }
 
-    private static let planner = HTMLHighlightPlanner()
 
     public static func highlight(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
         if html.utf16.count > maxHighlightLength {
@@ -32,36 +31,10 @@ public enum HTMLSyntaxHighlighter {
         return attributedString(html: html, theme: theme, plan: plan)
     }
 
-    static func plannedFullHighlight(documentID: UUID, html: String) async -> HighlightPlan? {
-        guard html.utf16.count <= maxHighlightLength else { return nil }
-        return await planner.fullPlan(for: html, documentID: documentID)
-    }
 
-    static func plannedRangeHighlight(documentID: UUID, text: String, requestedRange: NSRange) async -> HighlightPlan {
-        await planner.rangePlan(for: text, requestedRange: requestedRange, documentID: documentID)
-    }
 
-    static func invalidatePlannerCache(
-        documentID: UUID,
-        editRange: NSRange,
-        replacementUTF16Length: Int,
-        newTextLength: Int
-    ) async {
-        await planner.invalidate(
-            documentID: documentID,
-            editRange: editRange,
-            replacementUTF16Length: replacementUTF16Length,
-            newTextLength: newTextLength
-        )
-    }
 
-    static func clearPlannerCache(documentID: UUID) async {
-        await planner.clear(documentID: documentID)
-    }
 
-    static func plannerCacheCounts(documentID: UUID) async -> (plans: Int, chunks: Int) {
-        await planner.counts(documentID: documentID)
-    }
 
     static func attributedString(html: String, theme: HTMLEditorColorScheme, plan: HighlightPlan?) -> NSAttributedString {
         let attributed = NSMutableAttributedString(string: html)

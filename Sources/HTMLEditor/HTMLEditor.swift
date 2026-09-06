@@ -139,7 +139,9 @@ public struct HTMLEditor: NSViewRepresentable {
         var detailRecoveryTask: Task<Void, Never>?
         var editBurstTask: Task<Void, Never>?
         var documentVersion: Int = 0
-        let plannerDocumentID = UUID()
+        /// One planner per editor: caches, caps and lifetime all scoped to this
+        /// document rather than shared process-wide.
+        let planner = HTMLHighlightPlanner()
         var pendingLocalBindingSyncHTML: String?
         /// The exact string most recently written through the binding, kept so
         /// its echo can be recognised even after the text view has moved on.
@@ -240,9 +242,8 @@ public struct HTMLEditor: NSViewRepresentable {
             // the planner's remapping was built for.
             if let pendingEdit, magnitude == .incremental || magnitude == .medium {
                 invalidateCaches(for: pendingEdit, newTextLength: newLength)
-                Task {
-                    await HTMLSyntaxHighlighter.invalidatePlannerCache(
-                        documentID: self.plannerDocumentID,
+                Task { [planner] in
+                    await planner.invalidate(
                         editRange: pendingEdit.affectedRange,
                         replacementUTF16Length: pendingEdit.replacementUTF16Length,
                         newTextLength: newLength
@@ -252,8 +253,8 @@ public struct HTMLEditor: NSViewRepresentable {
             } else {
                 cachedRangePlans.removeAll()
                 lastVisibleRange = NSRange(location: 0, length: 0)
-                Task {
-                    await HTMLSyntaxHighlighter.clearPlannerCache(documentID: self.plannerDocumentID)
+                Task { [planner] in
+                    await planner.clear()
                 }
                 self.pendingEdit = nil
             }

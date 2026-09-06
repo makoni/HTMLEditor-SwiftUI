@@ -4,9 +4,8 @@ import Foundation
 
 @Test func testVisibleHighlightRemapShiftsTrailingSpansAfterInsertion() async throws {
     let html = "<div><span class=\"value\">text</span></div>"
-    let originalPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-        documentID: UUID(),
-        text: html,
+    let originalPlan = await HTMLHighlightPlanner().rangePlan(
+        for: html,
         requestedRange: NSRange(location: 0, length: html.utf16.count)
     )
     let insertionLocation = (html as NSString).range(of: "<span").location
@@ -40,9 +39,8 @@ import Foundation
 
 @Test func testVisibleHighlightRemapDropsDirtySpansButKeepsOutsideHighlight() async throws {
     let html = "<div class=\"one\"><span id=\"two\">text</span></div>"
-    let originalPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-        documentID: UUID(),
-        text: html,
+    let originalPlan = await HTMLHighlightPlanner().rangePlan(
+        for: html,
         requestedRange: NSRange(location: 0, length: html.utf16.count)
     )
     let classRange = (html as NSString).range(of: "class")

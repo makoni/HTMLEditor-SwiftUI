@@ -32,8 +32,8 @@ extension HTMLEditor.Coordinator {
         visibleHighlightState.clear()
         visibleHighlightTask?.cancel()
         prewarmTask?.cancel()
-        Task {
-            await HTMLSyntaxHighlighter.clearPlannerCache(documentID: plannerDocumentID)
+        Task { [planner] in
+            await planner.clear()
         }
         performFullHighlighting(html: html, theme: theme, textView: textView)
     }
@@ -139,7 +139,7 @@ extension HTMLEditor.Coordinator {
 
         fullHighlightTask = Task { [weak self, weak textView, weak scrollView] in
             guard let self else { return }
-            let plan = await HTMLSyntaxHighlighter.plannedFullHighlight(documentID: self.plannerDocumentID, html: html)
+            let plan = await self.planner.fullPlan(for: html)
             guard !Task.isCancelled else { return }
 
             await MainActor.run {

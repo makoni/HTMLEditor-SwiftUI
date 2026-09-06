@@ -19,6 +19,14 @@ struct HTMLHighlightChunkResult: Sendable {
     let spans: [HTMLSyntaxHighlighter.HighlightSpan]
 }
 
+/// Owned by a single `HTMLEditor.Coordinator`.
+///
+/// This used to be one process-wide instance keyed by a document UUID, which
+/// meant two editors on screen shared one cache and evicted each other's chunks
+/// under a global cap, every lookup filtered by document ID, and the object
+/// holding the ID never cleared its own entries on teardown. One planner per
+/// coordinator makes the caps per-document, deletes the filtering, and hands
+/// lifetime to ARC.
 actor HTMLHighlightPlanner {
     private enum ChunkDependencyKind: Sendable {
         case contextDependent
@@ -37,14 +45,12 @@ actor HTMLHighlightPlanner {
     }
 
     private struct PlannerCacheKey: Hashable, Sendable {
-        let documentID: UUID
         let textLength: Int
         let range: NSRange
         let docVersion: Int
     }
 
     private struct PlannerChunkCacheKey: Hashable, Sendable {
-        let documentID: UUID
         let textLength: Int
         let range: NSRange
         let fingerprint: Int
@@ -54,26 +60,25 @@ actor HTMLHighlightPlanner {
     private var cachedPlans: [CachedPlanEntry] = []
     private var cachedChunks: [CachedChunkEntry] = []
 
-    func fullPlan(for html: String, documentID: UUID) -> HTMLSyntaxHighlighter.HighlightPlan {
+    func fullPlan(for html: String) -> HTMLSyntaxHighlighter.HighlightPlan {
         let fullRange = NSRange(location: 0, length: (html as NSString).length)
-        return cachedPlan(for: html, range: fullRange, documentID: documentID) {
-            buildPlan(for: html, coveredRange: fullRange, documentID: documentID)
+        return cachedPlan(for: html, range: fullRange) {
+            buildPlan(for: html, coveredRange: fullRange)
         }
     }
 
-    func rangePlan(for text: String, requestedRange: NSRange, documentID: UUID) -> HTMLSyntaxHighlighter.HighlightPlan {
+    func rangePlan(for text: String, requestedRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
         let normalizedRange = HTMLHighlightPlanBuilder.normalizedRange(for: text, requestedRange: requestedRange)
         guard normalizedRange.location != NSNotFound, normalizedRange.length > 0 else {
             return HTMLSyntaxHighlighter.HighlightPlan(coveredRange: NSRange(location: 0, length: 0), spans: [])
         }
 
-        return cachedPlan(for: text, range: normalizedRange, documentID: documentID) {
-            buildPlan(for: text, coveredRange: normalizedRange, documentID: documentID)
+        return cachedPlan(for: text, range: normalizedRange) {
+            buildPlan(for: text, coveredRange: normalizedRange)
         }
     }
 
     func invalidate(
-        documentID: UUID,
         editRange: NSRange,
         replacementUTF16Length: Int,
         newTextLength: Int
@@ -85,7 +90,7 @@ actor HTMLHighlightPlanner {
         let lengthDelta = replacementUTF16Length - editRange.length
 
         if abs(lengthDelta) > HTMLHighlightPlanBuilder.plannerChunkSize * 8 {
-            clear(documentID: documentID)
+            clear()
             return
         }
 
@@ -94,17 +99,14 @@ actor HTMLHighlightPlanner {
             let chunkInvalidationRange = NSRange(location: chunkInvalidationStart, length: max(0, chunkInvalidationEnd - chunkInvalidationStart))
 
             cachedPlans.removeAll {
-                $0.key.documentID == documentID &&
                 NSIntersectionRange($0.key.range, planInvalidationRange).length > 0
             }
 
             cachedChunks.removeAll {
-                $0.key.documentID == documentID &&
                 NSIntersectionRange($0.key.range, chunkInvalidationRange).length > 0
             }
         } else {
             remapLengthChangingCaches(
-                documentID: documentID,
                 planInvalidationStart: planInvalidationStart,
                 chunkInvalidationStart: chunkInvalidationStart,
                 chunkInvalidationEnd: chunkInvalidationEnd,
@@ -114,24 +116,20 @@ actor HTMLHighlightPlanner {
         }
 
         if newTextLength <= planInvalidationStart {
-            clear(documentID: documentID)
+            clear()
         }
     }
 
-    func clear(documentID: UUID) {
-        cachedPlans.removeAll { $0.key.documentID == documentID }
-        cachedChunks.removeAll { $0.key.documentID == documentID }
+    func clear() {
+        cachedPlans.removeAll()
+        cachedChunks.removeAll()
     }
 
-    func counts(documentID: UUID) -> (plans: Int, chunks: Int) {
-        (
-            plans: cachedPlans.filter { $0.key.documentID == documentID }.count,
-            chunks: cachedChunks.filter { $0.key.documentID == documentID }.count
-        )
+    func counts() -> (plans: Int, chunks: Int) {
+        (plans: cachedPlans.count, chunks: cachedChunks.count)
     }
 
     private func remapLengthChangingCaches(
-        documentID: UUID,
         planInvalidationStart: Int,
         chunkInvalidationStart: Int,
         chunkInvalidationEnd: Int,
@@ -139,12 +137,10 @@ actor HTMLHighlightPlanner {
         lengthDelta: Int
     ) {
         cachedPlans = cachedPlans.compactMap { entry in
-            guard entry.key.documentID == documentID else { return entry }
             guard NSMaxRange(entry.key.range) <= planInvalidationStart else { return nil }
 
             return CachedPlanEntry(
                 key: PlannerCacheKey(
-                    documentID: documentID,
                     textLength: newTextLength,
                     range: entry.key.range,
                     docVersion: entry.key.docVersion
@@ -154,12 +150,9 @@ actor HTMLHighlightPlanner {
         }
 
         cachedChunks = cachedChunks.compactMap { entry in
-            guard entry.key.documentID == documentID else { return entry }
-
             if NSMaxRange(entry.key.range) <= chunkInvalidationStart {
                 return CachedChunkEntry(
                     key: PlannerChunkCacheKey(
-                        documentID: documentID,
                         textLength: newTextLength,
                         range: entry.key.range,
                         fingerprint: entry.key.fingerprint,
@@ -178,7 +171,6 @@ actor HTMLHighlightPlanner {
 
             return CachedChunkEntry(
                 key: PlannerChunkCacheKey(
-                    documentID: documentID,
                     textLength: newTextLength,
                     range: shiftedRange,
                     fingerprint: entry.key.fingerprint,
@@ -209,8 +201,7 @@ actor HTMLHighlightPlanner {
 
     private func initialScannerState(
         for text: String,
-        alignedStart: Int,
-        documentID: UUID
+        alignedStart: Int
     ) -> HTMLHighlightScannerState {
         guard alignedStart > 0 else { return .text }
 
@@ -224,7 +215,6 @@ actor HTMLHighlightPlanner {
         let textLength = text.utf16.count
         let fingerprint = textFingerprint(text, range: previousRange)
         guard let cached = cachedChunks.last(where: {
-            $0.key.documentID == documentID &&
             $0.key.textLength == textLength &&
             $0.key.range == previousRange &&
             $0.key.fingerprint == fingerprint
@@ -249,13 +239,11 @@ actor HTMLHighlightPlanner {
     private func cachedPlan(
         for text: String,
         range: NSRange,
-        documentID: UUID,
         build: () -> HTMLSyntaxHighlighter.HighlightPlan
     ) -> HTMLSyntaxHighlighter.HighlightPlan {
         let nsText = text as NSString
         let docVer = documentVersion(for: nsText)
         let key = PlannerCacheKey(
-            documentID: documentID,
             textLength: nsText.length,
             range: range,
             docVersion: docVer
@@ -268,7 +256,6 @@ actor HTMLHighlightPlanner {
         }
 
         if let coveringIndex = cachedPlans.firstIndex(where: {
-            $0.key.documentID == key.documentID &&
             $0.key.textLength == key.textLength &&
             $0.key.docVersion == docVer &&
             NSLocationInRange(range.location, $0.key.range) &&
@@ -287,7 +274,7 @@ actor HTMLHighlightPlanner {
         return plan
     }
 
-    private func buildPlan(for text: String, coveredRange: NSRange, documentID: UUID) -> HTMLSyntaxHighlighter.HighlightPlan {
+    private func buildPlan(for text: String, coveredRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {
         let nsText = text as NSString
         guard coveredRange.location != NSNotFound,
               coveredRange.length > 0,
@@ -302,11 +289,10 @@ actor HTMLHighlightPlanner {
 
         var scannerState = initialScannerState(
             for: text,
-            alignedStart: alignedRange.location,
-            documentID: documentID
+            alignedStart: alignedRange.location
         )
         for chunkRange in HTMLHighlightPlanBuilder.chunkRanges(for: alignedRange) {
-            let chunk = cachedChunk(for: text, range: chunkRange, inputState: scannerState, documentID: documentID) {
+            let chunk = cachedChunk(for: text, range: chunkRange, inputState: scannerState) {
                 HTMLHighlightPlanBuilder.buildChunk(in: nsText, range: chunkRange, initialState: scannerState)
             }
             spans.append(contentsOf: chunk.spans)
@@ -323,11 +309,9 @@ actor HTMLHighlightPlanner {
         for text: String,
         range: NSRange,
         inputState: HTMLHighlightScannerState,
-        documentID: UUID,
         build: () -> HTMLHighlightChunkResult
     ) -> HTMLHighlightChunkResult {
         let key = PlannerChunkCacheKey(
-            documentID: documentID,
             textLength: text.utf16.count,
             range: range,
             fingerprint: textFingerprint(text, range: range),
@@ -341,7 +325,6 @@ actor HTMLHighlightPlanner {
         }
 
         if let reusableIndex = cachedChunks.firstIndex(where: {
-            $0.key.documentID == documentID &&
             $0.key.textLength == key.textLength &&
             $0.key.range == key.range &&
             $0.key.fingerprint == key.fingerprint &&

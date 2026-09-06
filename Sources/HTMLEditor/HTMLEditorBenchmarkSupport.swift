@@ -64,104 +64,92 @@ public enum HTMLEditorBenchmarkSupport {
 
     private static func benchmarkPlannedFull(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
         await measure(label: "bench-planned-full-45k", iterations: 20) {
-            _ = await HTMLSyntaxHighlighter.plannedFullHighlight(documentID: UUID(), html: sampleHTML)
+            _ = await HTMLHighlightPlanner().fullPlan(for: sampleHTML)
         }
     }
 
     private static func benchmarkOverlap(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
-        let documentID = UUID()
-        _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: documentID,
-            text: sampleHTML,
+        let planner = HTMLHighlightPlanner()
+        _ = await planner.rangePlan(
+            for: sampleHTML,
             requestedRange: NSRange(location: 14_000, length: 1_600)
         )
 
         return await measure(label: "bench-overlap-range", iterations: 25) {
-            _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                documentID: documentID,
-                text: sampleHTML,
-                requestedRange: NSRange(location: 14_220, length: 1_600)
+            _ = await planner.rangePlan(
+                for: sampleHTML,
+            requestedRange: NSRange(location: 14_220, length: 1_600)
             )
         }
     }
 
     private static func benchmarkSameLengthEdit(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
-        let documentID = UUID()
+        let planner = HTMLHighlightPlanner()
         let targetRange = NSRange(location: 12_000, length: 1_800)
-        _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: documentID,
-            text: sampleHTML,
+        _ = await planner.rangePlan(
+            for: sampleHTML,
             requestedRange: targetRange
         )
-        await HTMLSyntaxHighlighter.invalidatePlannerCache(
-            documentID: documentID,
+        await planner.invalidate(
             editRange: NSRange(location: 12_020, length: 5),
             replacementUTF16Length: 5,
             newTextLength: sampleHTML.utf16.count
         )
 
         return await measure(label: "bench-same-length-edit", iterations: 25) {
-            _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                documentID: documentID,
-                text: sampleHTML,
-                requestedRange: targetRange
+            _ = await planner.rangePlan(
+                for: sampleHTML,
+            requestedRange: targetRange
             )
         }
     }
 
     private static func benchmarkLengthChangingEdit(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
-        let documentID = UUID()
+        let planner = HTMLHighlightPlanner()
         let targetRange = NSRange(location: 18_000, length: 1_500)
-        _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: documentID,
-            text: sampleHTML,
+        _ = await planner.rangePlan(
+            for: sampleHTML,
             requestedRange: targetRange
         )
-        await HTMLSyntaxHighlighter.invalidatePlannerCache(
-            documentID: documentID,
+        await planner.invalidate(
             editRange: NSRange(location: 400, length: 4),
             replacementUTF16Length: 9,
             newTextLength: sampleHTML.utf16.count + 5
         )
 
         return await measure(label: "bench-length-changing-edit", iterations: 25) {
-            _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                documentID: documentID,
-                text: sampleHTML,
-                requestedRange: targetRange
+            _ = await planner.rangePlan(
+                for: sampleHTML,
+            requestedRange: targetRange
             )
         }
     }
 
     private static func benchmarkContextIndependentReuse() async -> HTMLEditorBenchmarkResult {
-        let documentID = UUID()
+        let planner = HTMLHighlightPlanner()
         let html = String(repeating: "<div>plain text</div>\n", count: 220)
         let targetRange = NSRange(location: 2_048, length: 512)
-        _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: documentID,
-            text: html,
+        _ = await planner.rangePlan(
+            for: html,
             requestedRange: targetRange
         )
-        await HTMLSyntaxHighlighter.invalidatePlannerCache(
-            documentID: documentID,
+        await planner.invalidate(
             editRange: NSRange(location: 32, length: 1),
             replacementUTF16Length: 1,
             newTextLength: html.utf16.count
         )
 
         return await measure(label: "bench-context-independent-reuse", iterations: 25) {
-            _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                documentID: documentID,
-                text: html,
-                requestedRange: targetRange
+            _ = await planner.rangePlan(
+                for: html,
+            requestedRange: targetRange
             )
         }
     }
 
     private static func benchmarkVisibleHighlightRemap(_ sampleHTML: String) async -> HTMLEditorBenchmarkResult {
-        let initialPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: UUID(),
-            text: sampleHTML,
+        let initialPlan = await HTMLHighlightPlanner().rangePlan(
+            for: sampleHTML,
             requestedRange: NSRange(location: 14_000, length: 1_600)
         )
         let editLocation = 14_320
@@ -192,9 +180,8 @@ public enum HTMLEditorBenchmarkSupport {
         _ sampleHTML: String,
         localLength: Int
     ) async -> HTMLEditorBenchmarkResult {
-        let initialPlan = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-            documentID: UUID(),
-            text: sampleHTML,
+        let initialPlan = await HTMLHighlightPlanner().rangePlan(
+            for: sampleHTML,
             requestedRange: NSRange(location: 14_000, length: 1_600)
         )
         let localRange = NSRange(location: 14_200, length: min(localLength, max(1, sampleHTML.utf16.count - 14_200)))
@@ -248,14 +235,13 @@ public enum HTMLEditorBenchmarkSupport {
     }
 
     private static func benchmarkLargeDocumentRangePlan(_ html: String) async -> HTMLEditorBenchmarkResult {
-        let documentID = UUID()
+        let planner = HTMLHighlightPlanner()
         let requestedRange = NSRange(location: max(0, html.utf16.count / 2), length: 2_048)
 
         return await measure(label: "bench-large-doc-range-plan", iterations: 25) {
-            _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
-                documentID: documentID,
-                text: html,
-                requestedRange: requestedRange
+            _ = await planner.rangePlan(
+                for: html,
+            requestedRange: requestedRange
             )
         }
     }
