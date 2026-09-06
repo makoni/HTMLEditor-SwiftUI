@@ -185,6 +185,25 @@ enum HTMLHighlightPlanBuilder {
             return HTMLHighlightChunkResult(endState: initialState, spans: [])
         }
 
+        // Copy the chunk out in one call and scan the copy.  Reading a code unit
+        // at a time costs an Objective-C message per unit, and the string behind
+        // a live NSTextStorage is an NSBigMutableString, where that is several
+        // times more expensive again than a bulk read.  Chunks are bounded by
+        // plannerChunkSize, so the buffer stays on the stack.
+        return withUnsafeTemporaryAllocation(of: unichar.self, capacity: range.length) { buffer in
+            guard let base = buffer.baseAddress else {
+                return HTMLHighlightChunkResult(endState: initialState, spans: [])
+            }
+            text.getCharacters(base, range: range)
+            return scanChunk(buffer, range: range, initialState: initialState)
+        }
+    }
+
+    private static func scanChunk(
+        _ characters: UnsafeMutableBufferPointer<unichar>,
+        range: NSRange,
+        initialState: HTMLHighlightScannerState
+    ) -> HTMLHighlightChunkResult {
         var spans: [HTMLSyntaxHighlighter.HighlightSpan] = []
         spans.reserveCapacity(max(8, range.length / 24))
 
@@ -214,7 +233,7 @@ enum HTMLHighlightPlanBuilder {
         let end = NSMaxRange(range)
         var index = range.location
         while index < end {
-            let current = text.character(at: index)
+            let current = characters[index - range.location]
 
             switch state {
             case .text:

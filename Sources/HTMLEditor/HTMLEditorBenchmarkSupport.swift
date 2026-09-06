@@ -37,7 +37,8 @@ public enum HTMLEditorBenchmarkSupport {
         results += await MainActor.run {
             [
                 benchmarkLayoutVisibleRangeMap(sampleHTML),
-                benchmarkApplyTemporaryVisiblePlan(sampleHTML)
+                benchmarkApplyTemporaryVisiblePlan(sampleHTML),
+                benchmarkPlanOverTextStorageString(sampleHTML)
             ]
         }
 
@@ -300,6 +301,20 @@ public enum HTMLEditorBenchmarkSupport {
 
         return measureSync(label: "bench-apply-temporary-visible-plan-\(plan.spans.count)-spans", iterations: 100) {
             HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: runtime.layoutManager, theme: runtime.theme)
+        }
+    }
+
+    /// The same full plan as `bench-planned-full-45k`, but over the string a live
+    /// NSTextStorage hands back rather than a bridged Swift string.  That is an
+    /// NSBigMutableString, whose per-code-unit reads are markedly more expensive,
+    /// so this is the row that reflects what the editor actually pays.
+    @MainActor
+    private static func benchmarkPlanOverTextStorageString(_ sampleHTML: String) -> HTMLEditorBenchmarkResult {
+        let textStorage = NSTextStorage(string: sampleHTML)
+        let liveString = textStorage.string
+
+        return measureSync(label: "bench-planned-full-textstorage-string", iterations: 20) {
+            _ = HTMLHighlightPlanBuilder.fullPlan(for: liveString)
         }
     }
 
