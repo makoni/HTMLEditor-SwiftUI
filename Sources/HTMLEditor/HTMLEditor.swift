@@ -108,7 +108,13 @@ public struct HTMLEditor: NSViewRepresentable {
         }
     }
 
-    public class Coordinator: NSObject, NSTextViewDelegate, @unchecked Sendable {
+    /// Main-actor isolated rather than `@unchecked Sendable`.  Conforming to
+    /// NSTextViewDelegate only infers `@MainActor` on the individual delegate
+    /// methods, not on the class, so the stored state stayed nonisolated and the
+    /// unchecked conformance disabled the checking that would have caught a
+    /// `nonisolated` helper touching it.
+    @MainActor
+    public class Coordinator: NSObject, NSTextViewDelegate {
         struct CachedRangePlan {
             let range: NSRange
             let version: Int
