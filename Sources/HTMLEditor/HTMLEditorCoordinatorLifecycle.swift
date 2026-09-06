@@ -3,8 +3,12 @@ import AppKit
 import QuartzCore
 
 extension HTMLEditor.Coordinator {
+    /// Non-contiguous layout exists only in TextKit 1.  TextKit 2 lays out the
+    /// viewport by design, so there is nothing to switch — and reaching for
+    /// `layoutManager` to do it would drop the view out of TextKit 2 for good.
     @MainActor
     func updateLayoutPolicy(textView: NSTextView, textLength: Int) {
+        guard textView.textLayoutManager == nil else { return }
         guard let layoutManager = textView.layoutManager else { return }
         let currentlyEnabled = layoutManager.allowsNonContiguousLayout
         let shouldEnable = HTMLEditor.shouldUseNonContiguousLayout(
@@ -160,9 +164,9 @@ extension HTMLEditor.Coordinator {
             textView.string = html
         }
         HTMLSyntaxHighlighter.applyThemeBase(to: textView, theme: theme)
-        if let layoutManager = textView.layoutManager {
+        if let surface = HTMLEditorTextKitSurface.resolve(for: textView) {
             let fullRange = NSRange(location: 0, length: textView.string.utf16.count)
-            HTMLSyntaxHighlighter.clearTemporaryHighlights(in: layoutManager, range: fullRange)
+            surface.clearHighlights(in: fullRange)
             if let plan {
                 let budget = HTMLEditor.highlightBudget(forTextLength: textView.string.utf16.count)
                 let visibleWindow = visibleHighlightWindow(
@@ -172,7 +176,7 @@ extension HTMLEditor.Coordinator {
                     expansion: budget.fullPlanVisibleExpansion
                 )
                 let clippedPlan = HTMLSyntaxHighlighter.clippedPlan(plan, to: visibleWindow)
-                HTMLSyntaxHighlighter.applyTemporary(plan: clippedPlan, to: layoutManager, theme: theme)
+                HTMLSyntaxHighlighter.apply(plan: clippedPlan, to: surface, theme: theme)
                 visibleHighlightState.replace(with: clippedPlan)
                 recordHighlightedRange(clippedPlan.coveredRange, text: textView.string as NSString)
                 if budget.prewarmEnabled {
@@ -210,12 +214,9 @@ extension HTMLEditor.Coordinator {
 
         isUpdatingFromHighlighting = true
 
-        if let layoutManager = textView.layoutManager {
-            HTMLSyntaxHighlighter.clearTemporaryHighlights(
-                in: layoutManager,
-                range: NSRange(location: 0, length: textView.string.utf16.count)
-            )
-        }
+        HTMLEditorTextKitSurface.resolve(for: textView)?.clearHighlights(
+            in: NSRange(location: 0, length: textView.string.utf16.count)
+        )
 
         // Reassigning identical text relays out the whole document and drops the
         // undo stack; on an appearance change the text has not moved at all.
@@ -246,15 +247,15 @@ extension HTMLEditor.Coordinator {
         textLength: Int,
         expansion: Int
     ) -> NSRange {
-        guard let layoutManager = textView.layoutManager,
-              let textContainer = textView.textContainer,
-              textLength > 0 else {
+        guard textLength > 0,
+              let surface = HTMLEditorTextKitSurface.resolve(for: textView),
+              let visibleRange = surface.visibleCharacterRange(
+                  in: scrollView.documentVisibleRect,
+                  textContainer: textView.textContainer
+              ) else {
             return NSRange(location: 0, length: 0)
         }
 
-        let visibleRect = scrollView.documentVisibleRect
-        let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
-        let visibleRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
         let expandedStart = max(0, visibleRange.location - expansion)
         let expandedEnd = min(textLength, NSMaxRange(visibleRange) + expansion)
         return NSRange(location: expandedStart, length: max(0, expandedEnd - expandedStart))
@@ -274,6 +275,10 @@ extension HTMLEditor.Coordinator {
     func systemAppearanceChanged(textView: NSTextView) {
         let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
         appliedColorScheme = currentTheme
+        // Under TextKit 2 the colours are display attributes on vended
+        // paragraphs, so a theme change reaches the screen by making TextKit
+        // re-ask for them.
+        invalidateParagraphHighlighting(in: textView)
         textView.font = currentTheme.font
         textView.backgroundColor = currentTheme.background
         textView.textColor = currentTheme.foreground

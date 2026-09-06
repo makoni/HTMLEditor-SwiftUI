@@ -3,8 +3,14 @@ import AppKit
 import SwiftUI
 @testable import HTMLEditor
 
+/// TextKit 1 only, and deliberately so. The property under test is that the
+/// *pushed* immediate pass closes the gap between an edit and its colours. Under
+/// TextKit 2 there is no such gap to close: the content storage delegate is
+/// asked for a paragraph's styling whenever the paragraph is laid out, so the
+/// colours are never staged behind a scheduled pass.
 @MainActor
 @Test func testSmallDocumentEditImmediatelyRehighlightsDirtyRange() throws {
+    let textKit2 = false
     _ = NSApplication.shared
 
     let theme = makeTestTheme()
@@ -18,13 +24,13 @@ import SwiftUI
         theme: HTMLEditorTheme(light: theme, dark: theme)
     )
     let coordinator = HTMLEditor.Coordinator(editor)
-    let textView = NSTextView()
+    let textView = makeTextView(textKit2: textKit2, highlightedBy: coordinator)
     textView.string = newHTML
 
     let oldPlan = HTMLHighlightPlanBuilder.fullPlan(for: oldHTML)
     coordinator.visibleHighlightState.replace(with: oldPlan)
-    if let layoutManager = textView.layoutManager {
-        HTMLSyntaxHighlighter.applyTemporary(plan: oldPlan, to: layoutManager, theme: theme)
+    if let surface = HTMLEditorTextKitSurface.resolve(for: textView) {
+        HTMLSyntaxHighlighter.apply(plan: oldPlan, to: surface, theme: theme)
     }
 
     let editRange = NSRange(location: insertedLocation, length: 0)
@@ -46,11 +52,7 @@ import SwiftUI
         dirtyRange: dirtyRange
     )
 
-    let colorBeforeImmediatePass = textView.layoutManager?.temporaryAttribute(
-        .foregroundColor,
-        atCharacterIndex: insertedLocation,
-        effectiveRange: nil
-    ) as? NSColor
+    let colorBeforeImmediatePass = appliedHighlightColour(textView, at: insertedLocation)
     #expect(colorBeforeImmediatePass != theme.attributeName)
 
     coordinator.scheduleDirtyBlockHighlightAfterEdit(
@@ -58,10 +60,6 @@ import SwiftUI
         newTextLength: newHTML.utf16.count
     )
 
-    let colorAfterImmediatePass = textView.layoutManager?.temporaryAttribute(
-        .foregroundColor,
-        atCharacterIndex: insertedLocation,
-        effectiveRange: nil
-    ) as? NSColor
+    let colorAfterImmediatePass = appliedHighlightColour(textView, at: insertedLocation)
     #expect(colorAfterImmediatePass == theme.attributeName)
 }

@@ -186,7 +186,8 @@ import AppKit
 }
 
 @MainActor
-@Test func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme() async throws {
+@Test(arguments: [false, true])
+func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme(textKit2: Bool) async throws {
     let html = "<p>Hello</p>"
     let theme = makeTestTheme()
     let editor = HTMLEditor(
@@ -194,10 +195,11 @@ import AppKit
         theme: HTMLEditorTheme(light: theme, dark: theme)
     )
     let coordinator = HTMLEditor.Coordinator(editor)
-    let scrollView = NSScrollView()
-    let textView = NSTextView()
+    let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+    let textView = makeTextView(textKit2: textKit2, highlightedBy: coordinator)
     scrollView.documentView = textView
     textView.string = html
+    #expect((textView.textLayoutManager != nil) == textKit2)
 
     let plan = HTMLHighlightPlanBuilder.fullPlan(for: html)
     coordinator.applyFullHighlightPlan(plan, html: html, theme: theme, to: textView, in: scrollView)
@@ -205,21 +207,18 @@ import AppKit
     let tagRange = (html as NSString).range(of: "<p>")
     let plainTextRange = (html as NSString).range(of: "Hello")
 
-    let permanentTagColor = textView.textStorage?.attribute(
+    let storage = HTMLEditorTextKitSurface.textStorage(for: textView)
+    let permanentTagColor = storage?.attribute(
         .foregroundColor,
         at: tagRange.location,
         effectiveRange: nil
     ) as? NSColor
-    let permanentPlainTextColor = textView.textStorage?.attribute(
+    let permanentPlainTextColor = storage?.attribute(
         .foregroundColor,
         at: plainTextRange.location,
         effectiveRange: nil
     ) as? NSColor
-    let temporaryTagColor = textView.layoutManager?.temporaryAttribute(
-        .foregroundColor,
-        atCharacterIndex: tagRange.location,
-        effectiveRange: nil
-    ) as? NSColor
+    let temporaryTagColor = appliedHighlightColour(textView, at: tagRange.location)
 
     #expect(permanentTagColor == theme.foreground)
     #expect(permanentPlainTextColor == theme.foreground)
@@ -277,7 +276,7 @@ import AppKit
         coveredRange: NSRange(location: 0, length: html.utf16.count),
         spans: [stalePrewarmSpan]
     )
-    HTMLSyntaxHighlighter.applyTemporary(plan: prewarmPlan, to: layoutManager, theme: theme)
+    HTMLSyntaxHighlighter.apply(plan: prewarmPlan, to: .textKit1(layoutManager), theme: theme)
 
     var effectiveRange = NSRange(location: NSNotFound, length: 0)
     let colorAfterPrewarm = layoutManager.temporaryAttribute(
@@ -297,12 +296,7 @@ import AppKit
         spans: []   // position 5 is plain text — no attributeName span
     )
 
-    HTMLSyntaxHighlighter.applyTemporary(
-        plan: correctedPlan,
-        replacing: previousPlan,
-        to: layoutManager,
-        theme: theme
-    )
+    HTMLSyntaxHighlighter.apply(plan: correctedPlan, replacing: previousPlan, to: .textKit1(layoutManager), theme: theme)
 
     // 3. The stale prewarm attributeName colour must have been cleared by the
     //    full-overlap clear introduced by the Bug 1 fix.

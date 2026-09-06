@@ -91,80 +91,64 @@ public enum HTMLSyntaxHighlighter {
         apply(spans: plan.spans, to: textStorage, theme: theme)
     }
 
-    static func clearTemporaryHighlights(in layoutManager: NSLayoutManager, range: NSRange) {
-        guard range.location != NSNotFound, range.length > 0 else { return }
-        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+    @MainActor
+    static func clearHighlights(in surface: HTMLEditorTextKitSurface, range: NSRange) {
+        surface.clearHighlights(in: range)
     }
 
-    static func applyTemporary(plan: HighlightPlan, to layoutManager: NSLayoutManager, theme: HTMLEditorColorScheme) {
-        clearTemporaryHighlights(in: layoutManager, range: plan.coveredRange)
-        apply(spans: plan.spans, to: layoutManager, theme: theme)
-    }
-
-    /// A dense viewport is a few hundred spans, and this runs on the main thread
-    /// several times per keystroke, so the per-role dictionaries are built once
-    /// rather than rebuilt for every span.
-    private static func apply(
-        spans: [HighlightSpan],
-        to layoutManager: NSLayoutManager,
+    @MainActor
+    static func apply(
+        plan: HighlightPlan,
+        to surface: HTMLEditorTextKitSurface,
         theme: HTMLEditorColorScheme
     ) {
-        let tagAttributes: [NSAttributedString.Key: Any] = [.foregroundColor: theme.tag]
-        let nameAttributes: [NSAttributedString.Key: Any] = [.foregroundColor: theme.attributeName]
-        let valueAttributes: [NSAttributedString.Key: Any] = [.foregroundColor: theme.attributeValue]
-
-        for span in spans {
-            guard span.range.location >= 0 else { continue }
-            let attributes: [NSAttributedString.Key: Any]
-            switch span.role {
-            case .tag: attributes = tagAttributes
-            case .attributeName: attributes = nameAttributes
-            case .attributeValue: attributes = valueAttributes
-            }
-            layoutManager.addTemporaryAttributes(attributes, forCharacterRange: span.range)
-        }
+        surface.clearHighlights(in: plan.coveredRange)
+        surface.applyHighlights(plan.spans, origin: plan.coveredRange.location, theme: theme)
     }
 
-    static func applyTemporary(
+    @MainActor
+    static func apply(
         plan: HighlightPlan,
         replacing previousPlan: HighlightPlan?,
-        to layoutManager: NSLayoutManager,
+        to surface: HTMLEditorTextKitSurface,
         theme: HTMLEditorColorScheme
     ) {
         guard let previousPlan else {
-            applyTemporary(plan: plan, to: layoutManager, theme: theme)
+            apply(plan: plan, to: surface, theme: theme)
             return
         }
 
         let overlap = NSIntersectionRange(previousPlan.coveredRange, plan.coveredRange)
         if overlap.location == NSNotFound || overlap.length == 0 {
-            applyTemporary(plan: plan, to: layoutManager, theme: theme)
+            apply(plan: plan, to: surface, theme: theme)
             return
         }
 
         // Clear the full overlap region rather than only the positions listed in
-        // previousPlan.spans.  Temporary highlights applied by prewarm (which are
-        // never tracked in the visible plan's span list) would otherwise survive
-        // the transition and display stale colours on plain-text content.
-        clearTemporaryHighlights(in: layoutManager, range: overlap)
+        // previousPlan.spans.  Highlights applied by prewarm (which are never
+        // tracked in the visible plan's span list) would otherwise survive the
+        // transition and display stale colours on plain-text content.
+        surface.clearHighlights(in: overlap)
 
         if previousPlan.coveredRange.location > plan.coveredRange.location {
-            let leadingRange = NSRange(
-                location: plan.coveredRange.location,
-                length: previousPlan.coveredRange.location - plan.coveredRange.location
+            surface.clearHighlights(
+                in: NSRange(
+                    location: plan.coveredRange.location,
+                    length: previousPlan.coveredRange.location - plan.coveredRange.location
+                )
             )
-            clearTemporaryHighlights(in: layoutManager, range: leadingRange)
         }
 
         if NSMaxRange(previousPlan.coveredRange) < NSMaxRange(plan.coveredRange) {
-            let trailingRange = NSRange(
-                location: NSMaxRange(previousPlan.coveredRange),
-                length: NSMaxRange(plan.coveredRange) - NSMaxRange(previousPlan.coveredRange)
+            surface.clearHighlights(
+                in: NSRange(
+                    location: NSMaxRange(previousPlan.coveredRange),
+                    length: NSMaxRange(plan.coveredRange) - NSMaxRange(previousPlan.coveredRange)
+                )
             )
-            clearTemporaryHighlights(in: layoutManager, range: trailingRange)
         }
 
-        apply(spans: plan.spans, to: layoutManager, theme: theme)
+        surface.applyHighlights(plan.spans, origin: plan.coveredRange.location, theme: theme)
     }
 
     static func filteredPlan(_ plan: HighlightPlan, detail: HTMLEditorHighlightDetail) -> HighlightPlan {
@@ -218,7 +202,7 @@ public enum HTMLSyntaxHighlighter {
         textView.textColor = theme.foreground
         textView.backgroundColor = theme.background
 
-        guard let textStorage = textView.textStorage else { return }
+        guard let textStorage = HTMLEditorTextKitSurface.textStorage(for: textView) else { return }
         textStorage.beginEditing()
         textStorage.addAttribute(.font, value: theme.font, range: fullRange)
         textStorage.addAttribute(.foregroundColor, value: theme.foreground, range: fullRange)
@@ -238,7 +222,7 @@ public enum HTMLSyntaxHighlighter {
         for span in spans {
             guard span.range.location >= 0,
                   NSMaxRange(span.range) <= attributedString.length else { continue }
-            attributedString.addAttribute(.foregroundColor, value: color(for: span.role, theme: theme), range: span.range)
+            attributedString.addAttribute(.foregroundColor, value: colour(for: span.role, theme: theme), range: span.range)
         }
     }
 
@@ -246,11 +230,11 @@ public enum HTMLSyntaxHighlighter {
         for span in spans {
             guard span.range.location >= 0,
                   NSMaxRange(span.range) <= textStorage.length else { continue }
-            textStorage.addAttribute(.foregroundColor, value: color(for: span.role, theme: theme), range: span.range)
+            textStorage.addAttribute(.foregroundColor, value: colour(for: span.role, theme: theme), range: span.range)
         }
     }
 
-    private static func color(for role: HighlightRole, theme: HTMLEditorColorScheme) -> NSColor {
+    static func colour(for role: HighlightRole, theme: HTMLEditorColorScheme) -> NSColor {
         switch role {
         case .tag:
             return theme.tag

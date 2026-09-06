@@ -293,7 +293,11 @@ public enum HTMLEditorBenchmarkSupport {
         let plan = HTMLHighlightPlanBuilder.rangePlan(for: sampleHTML, requestedRange: runtime.visibleRange)
 
         return measureSync(label: "bench-apply-temporary-visible-plan-\(plan.spans.count)-spans", iterations: 100) {
-            HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: runtime.layoutManager, theme: runtime.theme)
+            HTMLSyntaxHighlighter.apply(
+                plan: plan,
+                to: .textKit1(runtime.layoutManager),
+                theme: runtime.theme
+            )
         }
     }
 
@@ -340,11 +344,14 @@ public enum HTMLEditorBenchmarkSupport {
         )
 
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
+        let textView = NSTextView(usingTextLayoutManager: HTMLEditorTextKitVersion.preferred)
+        textView.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
         textView.isRichText = false
         scrollView.documentView = textView
         textView.string = html
-        textView.layoutManager?.allowsNonContiguousLayout = true
+        if textView.textLayoutManager == nil {
+            textView.layoutManager?.allowsNonContiguousLayout = true
+        }
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.lineFragmentPadding = 0
 
@@ -382,10 +389,11 @@ public enum HTMLEditorBenchmarkSupport {
         )
         let seed = HTMLHighlightPlanBuilder.rangePlan(for: textView.string, requestedRange: visibleWindow)
         coordinator.visibleHighlightState.replace(with: seed)
-        if let layoutManager = textView.layoutManager {
-            HTMLSyntaxHighlighter.applyTemporary(plan: seed, to: layoutManager, theme: theme)
+        if let surface = HTMLEditorTextKitSurface.resolve(for: textView) {
+            HTMLSyntaxHighlighter.apply(plan: seed, to: surface, theme: theme)
         }
 
+        let kit = textView.textLayoutManager != nil ? "tk2" : "tk1"
         var insertSamples: [Double] = []
         var coordinatorSamples: [Double] = []
         var drawSamples: [Double] = []
@@ -407,7 +415,20 @@ public enum HTMLEditorBenchmarkSupport {
             coordinatorSamples.append(Double(DispatchTime.now().uptimeNanoseconds - coordinatorStart) / 1_000_000)
 
             let drawStart = DispatchTime.now().uptimeNanoseconds
-            if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+            // Never reach for `layoutManager` here: on a TextKit 2 view that
+            // access alone drops it to TextKit 1 mid-run and forces a full
+            // TextKit 1 layout of the whole document — which is how this line
+            // once produced a ten-second sample.
+            if let textLayoutManager = textView.textLayoutManager {
+                // Forcing viewport layout is the conservative reading. Drawing
+                // drives it on its own in a real window, so this may count work
+                // the app would not do twice — but leaving it out measures ~0,
+                // because `display()` on an unhosted window skips the drawing
+                // that would have triggered it. The truth is between the two;
+                // over-reporting is the safer error.
+                textLayoutManager.textViewportLayoutController.layoutViewport()
+            } else if let layoutManager = textView.layoutManager,
+                      let container = textView.textContainer {
                 layoutManager.ensureLayout(forBoundingRect: scrollView.documentVisibleRect, in: container)
             }
             textView.display()
@@ -415,9 +436,9 @@ public enum HTMLEditorBenchmarkSupport {
         }
 
         return [
-            result(label: "bench-keystroke-appkit-insert-\(caret.rawValue)", samples: insertSamples),
-            result(label: "bench-keystroke-coordinator-\(caret.rawValue)", samples: coordinatorSamples),
-            result(label: "bench-keystroke-layout-and-draw-\(caret.rawValue)", samples: drawSamples)
+            result(label: "bench-keystroke-appkit-insert-\(caret.rawValue)-\(kit)", samples: insertSamples),
+            result(label: "bench-keystroke-coordinator-\(caret.rawValue)-\(kit)", samples: coordinatorSamples),
+            result(label: "bench-keystroke-layout-and-draw-\(caret.rawValue)-\(kit)", samples: drawSamples)
         ]
     }
 

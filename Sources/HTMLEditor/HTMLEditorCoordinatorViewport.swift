@@ -7,7 +7,9 @@ extension HTMLEditor.Coordinator {
         guard let clipView = notification.object as? NSClipView,
               let scrollView = clipView.enclosingScrollView,
               let textView = scrollView.documentView as? NSTextView else { return }
-        if HTMLEditor.shouldUseScrollIdleMode(forTextLength: textView.textStorage?.length ?? 0) {
+        if HTMLEditor.shouldUseScrollIdleMode(
+            forTextLength: HTMLEditorTextKitSurface.textStorage(for: textView)?.length ?? 0
+        ) {
             scheduleScrollIdleHighlighting(textView: textView, scrollView: scrollView)
             return
         }
@@ -34,7 +36,7 @@ extension HTMLEditor.Coordinator {
         visibleHighlightDebounceTask = Task { @MainActor [weak self, weak textView, weak scrollView] in
             do {
                 let delay = overrideDelay ?? HTMLEditor.semanticHighlightDelay(
-                    forTextLength: textView?.textStorage?.length ?? 0,
+                    forTextLength: textView.map { HTMLEditorTextKitSurface.textStorage(for: $0)?.length ?? 0 } ?? 0,
                     trigger: trigger
                 )
                 try await Task.sleep(nanoseconds: delay)
@@ -46,13 +48,13 @@ extension HTMLEditor.Coordinator {
             // it works from current state by construction rather than from a
             // snapshot that could have gone stale.
             guard let self, let textView, let scrollView else { return }
-            let visibleRect = scrollView.documentVisibleRect
-            guard let layoutManager = textView.layoutManager,
-                  let textContainer = textView.textContainer,
-                  let textStorage = textView.textStorage else { return }
+            guard let surface = HTMLEditorTextKitSurface.resolve(for: textView),
+                  let textStorage = HTMLEditorTextKitSurface.textStorage(for: textView),
+                  let visibleRange = surface.visibleCharacterRange(
+                      in: scrollView.documentVisibleRect,
+                      textContainer: textView.textContainer
+                  ) else { return }
 
-            let visibleGlyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
-            let visibleRange = layoutManager.characterRange(forGlyphRange: visibleGlyphRange, actualGlyphRange: nil)
             self.highlightVisibleRange(
                 textView: textView,
                 scrollView: scrollView,
@@ -96,6 +98,7 @@ extension HTMLEditor.Coordinator {
         let scrollDirection = visibleRange.location - lastVisibleRange.location
         lastVisibleRange = visibleRange
 
+        let surface = HTMLEditorTextKitSurface.resolve(for: textView)
         let textSnapshot = textStorage.string
         let textNSString = textSnapshot as NSString
         let needsHighlighting = rangeNeedsHighlighting(visibleRange, text: textNSString, forceHighlight: forceHighlight)
@@ -120,11 +123,11 @@ extension HTMLEditor.Coordinator {
 
             if let cachedPlan = cachedPlanCovering(expandedRange, version: currentVersion, textLength: textLength) {
                 let displayPlan = HTMLSyntaxHighlighter.filteredPlan(cachedPlan, detail: detail)
-                if !preserveExistingOverlay {
+                if !preserveExistingOverlay, let surface {
                     performVisibleRangeHighlighting(
                         plan: displayPlan,
                         theme: currentTheme,
-                        textStorage: textStorage,
+                        surface: surface,
                         replacesVisibleOverlay: true
                     )
                     // Only claim coverage for text that was actually repainted;
@@ -152,11 +155,11 @@ extension HTMLEditor.Coordinator {
             let plan = planner.rangePlan(for: textSnapshot, requestedRange: expandedRange)
             storeCachedPlan(plan, version: currentVersion, textLength: textLength)
             let displayPlan = HTMLSyntaxHighlighter.filteredPlan(plan, detail: detail)
-            if !preserveExistingOverlay {
+            if !preserveExistingOverlay, let surface {
                 performVisibleRangeHighlighting(
                     plan: displayPlan,
                     theme: currentTheme,
-                    textStorage: textStorage,
+                    surface: surface,
                     replacesVisibleOverlay: true
                 )
                 recordHighlightedRange(plan.coveredRange, text: textNSString)
@@ -184,7 +187,7 @@ extension HTMLEditor.Coordinator {
 
         let scheduledVersion = documentVersion
         let delay = HTMLEditor.semanticHighlightDelay(
-            forTextLength: textView.textStorage?.length ?? 0,
+            forTextLength: HTMLEditorTextKitSurface.textStorage(for: textView)?.length ?? 0,
             trigger: .scroll
         )
 
@@ -212,43 +215,31 @@ extension HTMLEditor.Coordinator {
     func performVisibleRangeHighlighting(
         plan: HTMLSyntaxHighlighter.HighlightPlan,
         theme: HTMLEditorColorScheme,
-        textStorage: NSTextStorage,
+        surface: HTMLEditorTextKitSurface,
         replacesVisibleOverlay: Bool,
         clearsDirtyRange: Bool = true,
         previousVisiblePlan: HTMLSyntaxHighlighter.HighlightPlan? = nil
     ) {
         isUpdatingFromHighlighting = true
+        defer { isUpdatingFromHighlighting = false }
 
-        if let layoutManager = textStorage.layoutManagers.first {
-            if replacesVisibleOverlay {
-                HTMLSyntaxHighlighter.applyTemporary(
-                    plan: plan,
-                    replacing: previousVisiblePlan ?? visibleHighlightState.plan,
-                    to: layoutManager,
-                    theme: theme
-                )
-                if clearsDirtyRange {
-                    visibleHighlightState.replace(with: plan)
-                } else {
-                    visibleHighlightState.storeOverlayPlan(plan)
-                }
-            } else {
-                HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: layoutManager, theme: theme)
-            }
-        } else {
-            textStorage.beginEditing()
-            HTMLSyntaxHighlighter.apply(plan: plan, to: textStorage, theme: theme)
-            textStorage.endEditing()
-            if replacesVisibleOverlay {
-                if clearsDirtyRange {
-                    visibleHighlightState.replace(with: plan)
-                } else {
-                    visibleHighlightState.storeOverlayPlan(plan)
-                }
-            }
+        guard replacesVisibleOverlay else {
+            HTMLSyntaxHighlighter.apply(plan: plan, to: surface, theme: theme)
+            return
         }
 
-        isUpdatingFromHighlighting = false
+        HTMLSyntaxHighlighter.apply(
+            plan: plan,
+            replacing: previousVisiblePlan ?? visibleHighlightState.plan,
+            to: surface,
+            theme: theme
+        )
+
+        if clearsDirtyRange {
+            visibleHighlightState.replace(with: plan)
+        } else {
+            visibleHighlightState.storeOverlayPlan(plan)
+        }
     }
 
     /// Paints `plan` while recording `visiblePlan` as the state of the viewport.
@@ -266,19 +257,12 @@ extension HTMLEditor.Coordinator {
         _ plan: HTMLSyntaxHighlighter.HighlightPlan,
         recordingVisiblePlan visiblePlan: HTMLSyntaxHighlighter.HighlightPlan,
         theme: HTMLEditorColorScheme,
-        textStorage: NSTextStorage
+        surface: HTMLEditorTextKitSurface
     ) {
         isUpdatingFromHighlighting = true
         defer { isUpdatingFromHighlighting = false }
 
-        if let layoutManager = textStorage.layoutManagers.first {
-            HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: layoutManager, theme: theme)
-        } else {
-            textStorage.beginEditing()
-            HTMLSyntaxHighlighter.apply(plan: plan, to: textStorage, theme: theme)
-            textStorage.endEditing()
-        }
-
+        HTMLSyntaxHighlighter.apply(plan: plan, to: surface, theme: theme)
         visibleHighlightState.storeOverlayPlan(visiblePlan)
     }
 
@@ -355,7 +339,8 @@ extension HTMLEditor.Coordinator {
             for candidate in candidates {
                 guard !Task.isCancelled,
                       let textView,
-                      let currentTextStorage = textView.textStorage,
+                      let currentTextStorage = HTMLEditorTextKitSurface.textStorage(for: textView),
+                      let surface = HTMLEditorTextKitSurface.resolve(for: textView),
                       self.documentVersion == version,
                       currentTextStorage.length == textLength else { return }
 
@@ -367,7 +352,7 @@ extension HTMLEditor.Coordinator {
                 self.performVisibleRangeHighlighting(
                     plan: plan,
                     theme: theme,
-                    textStorage: currentTextStorage,
+                    surface: surface,
                     replacesVisibleOverlay: false
                 )
                 self.recordHighlightedRange(plan.coveredRange, text: currentText)
@@ -442,8 +427,7 @@ extension HTMLEditor.Coordinator {
         dirtyRange: NSRange
     ) {
         let previousVisiblePlan = visibleHighlightState.plan
-        guard let textStorage = textView.textStorage,
-              let preservedPlan = visibleHighlightState.remapAfterEdit(
+        guard let preservedPlan = visibleHighlightState.remapAfterEdit(
                   editRange: edit.affectedRange,
                   replacementUTF16Length: edit.replacementUTF16Length,
                   newTextLength: newTextLength,
@@ -464,7 +448,7 @@ extension HTMLEditor.Coordinator {
         // The stale-prewarm hazard that makes this region delicate does not
         // apply: prewarm is disabled above the conservative threshold, and below
         // it the immediate pass covers the same range either way.
-        _ = (preservedPlan, previousVisiblePlan, textStorage)
+        _ = (preservedPlan, previousVisiblePlan)
     }
 
     /// Paints whatever plan is currently tracked as visible.  Used as the
@@ -473,12 +457,12 @@ extension HTMLEditor.Coordinator {
     @MainActor
     func repaintVisiblePlan(textView: NSTextView) {
         guard let plan = visibleHighlightState.plan,
-              let textStorage = textView.textStorage else { return }
+              let surface = HTMLEditorTextKitSurface.resolve(for: textView) else { return }
 
         performVisibleRangeHighlighting(
             plan: plan,
             theme: parent.theme.current(for: NSApp.effectiveAppearance),
-            textStorage: textStorage,
+            surface: surface,
             replacesVisibleOverlay: true,
             clearsDirtyRange: false
         )
@@ -493,7 +477,7 @@ extension HTMLEditor.Coordinator {
             do {
                 try await Task.sleep(
                     nanoseconds: HTMLEditor.semanticHighlightDelay(
-                        forTextLength: textView?.textStorage?.length ?? 0,
+                        forTextLength: textView.map { HTMLEditorTextKitSurface.textStorage(for: $0)?.length ?? 0 } ?? 0,
                         trigger: .recovery
                     )
                 )

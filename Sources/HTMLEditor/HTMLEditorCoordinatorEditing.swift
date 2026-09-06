@@ -91,7 +91,8 @@ extension HTMLEditor.Coordinator {
         textView: NSTextView
     ) {
         guard localRange.length > 0,
-              let textStorage = textView.textStorage else { return }
+              let textStorage = HTMLEditorTextKitSurface.textStorage(for: textView),
+              let surface = HTMLEditorTextKitSurface.resolve(for: textView) else { return }
 
         let localPlan = HTMLHighlightPlanBuilder.rangePlan(
             for: textStorage.string,
@@ -112,7 +113,7 @@ extension HTMLEditor.Coordinator {
             clippedLocalPlan,
             recordingVisiblePlan: mergedPlan,
             theme: parent.theme.current(for: NSApp.effectiveAppearance),
-            textStorage: textStorage
+            surface: surface
         )
     }
 }

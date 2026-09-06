@@ -9,7 +9,19 @@ import SwiftUI
 
 @main
 struct HTMLEditorDemoApp: App {
-    @State private var htmlContent: String = """
+    @State private var htmlContent: String = HTMLEditorDemoApp.initialContent
+
+    /// `HTMLEDITOR_DEMO_FILE` loads a document at launch, for profiling against
+    /// something realistic instead of the sample below.
+    private static var initialContent: String {
+        if let path = ProcessInfo.processInfo.environment["HTMLEDITOR_DEMO_FILE"],
+           let contents = try? String(contentsOfFile: path, encoding: .utf8) {
+            return contents
+        }
+        return sampleContent
+    }
+
+    private static let sampleContent: String = """
     <h1>Welcome to <b>HTMLEditor</b></h1>
         
     <p>

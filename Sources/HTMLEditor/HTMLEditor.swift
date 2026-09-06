@@ -16,7 +16,9 @@ public struct HTMLEditor: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
-        let textView = AppearanceAwareTextView()
+        let textView = AppearanceAwareTextView(
+            usingTextLayoutManager: HTMLEditorTextKitVersion.preferred
+        )
         textView.delegate = context.coordinator
         textView.isEditable = true
         textView.isRichText = false
@@ -28,10 +30,14 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.layoutManager?.allowsNonContiguousLayout = HTMLEditor.shouldUseNonContiguousLayout(
-            forTextLength: html.utf16.count,
-            currentlyEnabled: false
-        )
+        // Only meaningful under TextKit 1, and reading `layoutManager` at all
+        // would drop a TextKit 2 view into compatibility mode permanently.
+        if textView.textLayoutManager == nil {
+            textView.layoutManager?.allowsNonContiguousLayout = HTMLEditor.shouldUseNonContiguousLayout(
+                forTextLength: html.utf16.count,
+                currentlyEnabled: false
+            )
+        }
         textView.usesRuler = false
         textView.isRulerVisible = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -40,6 +46,10 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.drawsBackground = true
         textView.textContainer?.widthTracksTextView = true
+
+        // TextKit 2 pulls paragraph styling from this delegate as it lays the
+        // viewport out, so it must be in place before any layout happens.
+        textView.textContentStorage?.delegate = context.coordinator
 
         textView.string = html
         textView.coordinator = context.coordinator
@@ -57,12 +67,9 @@ public struct HTMLEditor: NSViewRepresentable {
         scrollView.horizontalScrollElasticity = .none
 
         HTMLSyntaxHighlighter.applyThemeBase(to: textView, theme: currentTheme)
-        if let layoutManager = textView.layoutManager {
-            HTMLSyntaxHighlighter.clearTemporaryHighlights(
-                in: layoutManager,
-                range: NSRange(location: 0, length: html.utf16.count)
-            )
-        }
+        HTMLEditorTextKitSurface.resolve(for: textView)?.clearHighlights(
+            in: NSRange(location: 0, length: html.utf16.count)
+        )
         NotificationCenter.default.addObserver(
             context.coordinator,
             selector: #selector(context.coordinator.scrollViewDidScroll(_:)),
@@ -79,6 +86,15 @@ public struct HTMLEditor: NSViewRepresentable {
             theme: currentTheme,
             textView: textView
         )
+
+        // A single stray TextKit 1 access anywhere in the setup above would have
+        // dropped the view back irreversibly, and it would still look like it
+        // worked — just slowly.  Fail loudly in debug instead.
+        assert(
+            !HTMLEditorTextKitVersion.preferred || textView.textLayoutManager != nil,
+            "TextKit 2 was requested but the text view fell back to TextKit 1"
+        )
+        HTMLEditorAutoTypeDiagnostic.startIfRequested(textView: textView, scrollView: scrollView)
         return scrollView
     }
 
@@ -152,6 +168,8 @@ public struct HTMLEditor: NSViewRepresentable {
         var highlightCoverage = HTMLEditorHighlightCoverage()
         var visibleHighlightState = HTMLEditorVisibleHighlightState()
         var appliedColorScheme: HTMLEditorColorScheme?
+        /// Per-paragraph plans for the TextKit 2 pull-based path.
+        var paragraphPlanCache: [ParagraphPlanKey: HTMLSyntaxHighlighter.HighlightPlan] = [:]
 
         init(_ parent: HTMLEditor) {
             self.parent = parent
