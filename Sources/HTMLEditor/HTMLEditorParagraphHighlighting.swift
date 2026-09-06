@@ -26,6 +26,16 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
         _ textContentStorage: NSTextContentStorage,
         textParagraphWith range: NSRange
     ) -> NSTextParagraph? {
+        HTMLEditorSignpost.interval("paragraph-styling") {
+            styledParagraph(in: textContentStorage, range: range)
+        }
+    }
+
+    @MainActor
+    private func styledParagraph(
+        in textContentStorage: NSTextContentStorage,
+        range: NSRange
+    ) -> NSTextParagraph? {
         guard let textStorage = textContentStorage.textStorage,
               range.location != NSNotFound,
               range.length > 0,

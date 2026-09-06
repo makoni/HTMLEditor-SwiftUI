@@ -14,6 +14,7 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
     let coordinator = HTMLEditor.Coordinator(editor)
     // Mirror what makeNSView records once the text view is showing `html`.
     coordinator.previousText = html
+    coordinator.displayedToken = HTMLEditor.Coordinator.DocumentToken(html)
     return coordinator
 }
 
@@ -53,12 +54,12 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
     let normalised = "<p>  tabbed</p>"
 
     let coordinator = makeCoordinator(displaying: typed)
-    coordinator.lastBindingWriteHTML = typed
+    coordinator.lastBindingWriteToken = HTMLEditor.Coordinator.DocumentToken(typed)
     #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: normalised) == true)
 
     // The plain echo of an unmodified write is still ignored.
     let plain = makeCoordinator(displaying: typed)
-    plain.lastBindingWriteHTML = typed
+    plain.lastBindingWriteToken = HTMLEditor.Coordinator.DocumentToken(typed)
     #expect(plain.shouldApplyExternalUpdate(incomingHTML: typed) == false)
 }
 
@@ -73,7 +74,7 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
     let typedSince = "<p>abc</p>"
 
     let coordinator = makeCoordinator(displaying: typedSince)
-    coordinator.lastBindingWriteHTML = sentToBinding
+    coordinator.lastBindingWriteToken = HTMLEditor.Coordinator.DocumentToken(sentToBinding)
 
     #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: sentToBinding) == false)
 
@@ -88,12 +89,14 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
     // again (an undo, say) would be ignored forever.
     let html = "<p>ab</p>"
     let coordinator = makeCoordinator(displaying: html)
-    coordinator.lastBindingWriteHTML = html
+    coordinator.lastBindingWriteToken = HTMLEditor.Coordinator.DocumentToken(html)
 
     #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: html) == false)
-    #expect(coordinator.lastBindingWriteHTML == nil)
+    #expect(coordinator.lastBindingWriteToken == nil)
 
+    // Once the view moves on, that same value is a genuine external change again.
     coordinator.previousText = "<p>edited</p>"
+    coordinator.displayedToken = HTMLEditor.Coordinator.DocumentToken("<p>edited</p>")
     #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: html) == true)
 }
 

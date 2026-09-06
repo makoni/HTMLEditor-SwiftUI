@@ -25,8 +25,9 @@ extension HTMLEditor.Coordinator {
         detailRecoveryTask?.cancel()
         updateLayoutPolicy(textView: textView, textLength: html.utf16.count)
         previousText = html
+        displayedToken = DocumentToken(html)
         pendingLocalBindingSyncHTML = nil
-        lastBindingWriteHTML = nil
+        lastBindingWriteToken = nil
         documentVersion &+= 1
         lastVisibleRange = NSRange(location: 0, length: 0)
         highlightCoverage.clear()
@@ -41,32 +42,41 @@ extension HTMLEditor.Coordinator {
 
     @MainActor
     func shouldApplyExternalUpdate(incomingHTML: String) -> Bool {
-        // `previousText` is what the text view is showing, so an exact match has
-        // nothing to apply.  Comparing the text itself matters: this was once a
-        // four-sample fingerprint, which is fine as a cache key but not as
-        // document equality — any same-length change that missed the sampled
-        // offsets, such as a find-and-replace or an equal-length rename, read as
-        // "no change" and was silently dropped.
-        if incomingHTML == previousText {
-            lastBindingWriteHTML = nil
-            return false
-        }
-
-        // Our own write coming back after the text view has moved on.  For large
-        // documents the binding is deliberately behind — bindingSyncDelay defers
-        // the write — so a keystroke landing in that window is routine, not an
-        // edge case.  Applying it would reset the document to an older state,
-        // reflowing the whole text view and dropping the selection.
+        // Deliberately never compares the documents.
         //
-        // Matching the written string rather than a "waiting for echo" flag is
-        // what keeps this from also swallowing a parent that normalises in its
-        // setter: a normalised value differs from what was sent, so it still
-        // gets applied.
-        if let lastBindingWriteHTML, incomingHTML == lastBindingWriteHTML {
+        // Comparing them is what made typing slow: `String ==` tests canonical
+        // equivalence, normalising both sides through NFD and NFC and walking
+        // them scalar by scalar, which on the lazily bridged NSBigMutableString
+        // a live NSTextStorage hands back costs ~570 ms for 13 MB. Literal
+        // NSString equality is better and still ~66 ms. Neither belongs on a
+        // path SwiftUI runs after every keystroke.
+        //
+        // Worse, there is nothing to compare against: `previousText` holds that
+        // same live string, so it reports the *current* text rather than what
+        // was displayed when it was assigned. The comparison could never have
+        // been the cheap identity check it looked like.
+        //
+        // So recognise our own echo by a token taken when the write was made:
+        // length plus sampled code units, O(1) to build and to check.
+        // Already on screen: nothing to do. SwiftUI calls back with the same
+        // value after the initial makeNSView, and re-applying it would rebuild
+        // the whole document for nothing.
+        if displayedToken?.matches(incomingHTML) == true {
+            lastBindingWriteToken = nil
             return false
         }
 
-        lastBindingWriteHTML = nil
+        guard let token = lastBindingWriteToken else { return true }
+
+        if token.matches(incomingHTML) {
+            // Our own value coming back. Keep the token while the text view has
+            // moved on, because more echoes of it may still arrive.
+            return false
+        }
+
+        // Something else — a genuine external change, or a parent that
+        // normalises what it stores. Either way it has to be applied.
+        lastBindingWriteToken = nil
         return true
     }
 
@@ -77,8 +87,8 @@ extension HTMLEditor.Coordinator {
 
         guard let delay = HTMLEditor.bindingSyncDelay(forTextLength: html.utf16.count) else {
             pendingLocalBindingSyncHTML = nil
-            lastBindingWriteHTML = html
-            parent.html = html
+            lastBindingWriteToken = DocumentToken(html)
+            HTMLEditorSignpost.interval("binding-write-immediate") { parent.html = html }
             return
         }
 
@@ -94,8 +104,8 @@ extension HTMLEditor.Coordinator {
                   self.documentVersion == scheduledVersion,
                   self.pendingLocalBindingSyncHTML != nil else { return }
             self.pendingLocalBindingSyncHTML = nil
-            self.lastBindingWriteHTML = html
-            self.parent.html = html
+            self.lastBindingWriteToken = DocumentToken(html)
+            HTMLEditorSignpost.interval("binding-write-deferred") { self.parent.html = html }
         }
     }
 
@@ -106,8 +116,10 @@ extension HTMLEditor.Coordinator {
 
         guard let pendingLocalBindingSyncHTML else { return }
         self.pendingLocalBindingSyncHTML = nil
-        lastBindingWriteHTML = pendingLocalBindingSyncHTML
-        parent.html = pendingLocalBindingSyncHTML
+        lastBindingWriteToken = DocumentToken(pendingLocalBindingSyncHTML)
+        HTMLEditorSignpost.interval("binding-write-flush") {
+            parent.html = pendingLocalBindingSyncHTML
+        }
     }
 
     @MainActor

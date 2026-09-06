@@ -11,11 +11,16 @@ import SwiftUI
 struct HTMLEditorDemoApp: App {
     @State private var htmlContent: String = HTMLEditorDemoApp.initialContent
 
-    /// `HTMLEDITOR_DEMO_FILE` loads a document at launch, for profiling against
-    /// something realistic instead of the sample below.
+    /// Loads a document at launch so a plain Run or Profile in Xcode opens
+    /// something realistic. Falls back to the sample if the file is not there.
+    ///
+    /// Profiling note: while investigating typing latency this points at the
+    /// document being investigated. Point it elsewhere, or delete the path, to
+    /// get the sample back.
+    private static let profilingDocument = "/Users/mak/Downloads/htmltotest.txt"
+
     private static var initialContent: String {
-        if let path = ProcessInfo.processInfo.environment["HTMLEDITOR_DEMO_FILE"],
-           let contents = try? String(contentsOfFile: path, encoding: .utf8) {
+        if let contents = try? String(contentsOfFile: profilingDocument, encoding: .utf8) {
             return contents
         }
         return sampleContent

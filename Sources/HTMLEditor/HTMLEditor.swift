@@ -67,6 +67,7 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.coordinator = context.coordinator
         context.coordinator.appliedColorScheme = currentTheme
         context.coordinator.previousText = html
+        context.coordinator.displayedToken = Coordinator.DocumentToken(html)
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -111,6 +112,12 @@ public struct HTMLEditor: NSViewRepresentable {
     }
 
     public func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        HTMLEditorSignpost.interval("updateNSView") {
+            performUpdate(scrollView, context: context)
+        }
+    }
+
+    private func performUpdate(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         // SwiftUI hands over a fresh HTMLEditor value on every update, so without
         // this the coordinator keeps the binding and theme it captured at init:
@@ -150,6 +157,39 @@ public struct HTMLEditor: NSViewRepresentable {
             let plan: HTMLSyntaxHighlighter.HighlightPlan
         }
 
+        /// A cheap stand-in for "is this the same string we just wrote".
+        ///
+        /// Length plus code units sampled across the document. Two different
+        /// documents can collide, but the token is only ever tested against the
+        /// one value this editor wrote moments earlier, so a collision needs an
+        /// external change that matches that value in length and at all sampled
+        /// offsets — and the cost of being right instead is hundreds of
+        /// milliseconds per keystroke.
+        struct DocumentToken {
+            let length: Int
+            private let fingerprint: Int
+
+            init(_ text: String) {
+                let string = text as NSString
+                length = string.length
+                var hasher = Hasher()
+                hasher.combine(length)
+                if length > 0 {
+                    let samples = 64
+                    for index in 0..<samples {
+                        let offset = length == 1 ? 0 : (length - 1) * index / (samples - 1)
+                        hasher.combine(string.character(at: offset))
+                    }
+                }
+                fingerprint = hasher.finalize()
+            }
+
+            func matches(_ text: String) -> Bool {
+                let candidate = DocumentToken(text)
+                return candidate.length == length && candidate.fingerprint == fingerprint
+            }
+        }
+
         struct PendingEdit {
             let affectedRange: NSRange
             let replacementUTF16Length: Int
@@ -169,9 +209,11 @@ public struct HTMLEditor: NSViewRepresentable {
         /// document rather than shared process-wide.
         let planner = HTMLHighlightPlanner()
         var pendingLocalBindingSyncHTML: String?
-        /// The exact string most recently written through the binding, kept so
-        /// its echo can be recognised even after the text view has moved on.
-        var lastBindingWriteHTML: String?
+        /// Identifies the value most recently written through the binding, so
+        /// its echo can be recognised without comparing whole documents.
+        var lastBindingWriteToken: DocumentToken?
+        /// Identifies what the text view is showing, for the same reason.
+        var displayedToken: DocumentToken?
         var pendingEdit: PendingEdit?
         var cachedFullHighlightPlan: HTMLSyntaxHighlighter.HighlightPlan?
         var cachedFullHighlightVersion: Int?
@@ -213,6 +255,12 @@ public struct HTMLEditor: NSViewRepresentable {
         }
 
         public func textDidChange(_ notification: Notification) {
+            HTMLEditorSignpost.interval("textDidChange") {
+                handleTextDidChange(notification)
+            }
+        }
+
+        private func handleTextDidChange(_ notification: Notification) {
             guard !isUpdatingFromHighlighting,
                   let textView = notification.object as? NSTextView else { return }
 
@@ -227,6 +275,7 @@ public struct HTMLEditor: NSViewRepresentable {
             )
 
             previousText = newText
+            displayedToken = DocumentToken(newText)
             documentVersion &+= 1
             updateLayoutPolicy(textView: textView, textLength: newLength)
             cachedFullHighlightPlan = nil
