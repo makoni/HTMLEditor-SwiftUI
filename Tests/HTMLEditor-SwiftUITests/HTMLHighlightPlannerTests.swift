@@ -55,14 +55,14 @@ import AppKit
         requestedRange: targetRange
     )
 
-    let beforeCounts = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: documentID)
+    let beforeCounts = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: documentID)
     await HTMLSyntaxHighlighter.invalidatePlannerCache(
         documentID: documentID,
         editRange: editRange,
         replacementUTF16Length: editRange.length,
         newTextLength: repeated.utf16.count
     )
-    let afterInvalidationCounts = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: documentID)
+    let afterInvalidationCounts = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: documentID)
 
     #expect(beforeCounts.chunks > 0)
     #expect(afterInvalidationCounts.chunks > 0)
@@ -76,7 +76,7 @@ import AppKit
 
     let fullPlan = await HTMLSyntaxHighlighter.plannedFullHighlight(documentID: docID, html: html)
     #expect(fullPlan != nil)
-    let countsAfterFull = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let countsAfterFull = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
     #expect(countsAfterFull.plans >= 1)
 
     let subRange = NSRange(location: 12, length: 24)
@@ -86,7 +86,7 @@ import AppKit
         requestedRange: subRange
     )
 
-    let countsAfterSub = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let countsAfterSub = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
 
     #expect(countsAfterSub.plans == countsAfterFull.plans)
     #expect(subPlan.coveredRange.location != NSNotFound)
@@ -104,7 +104,7 @@ import AppKit
         requestedRange: NSRange(location: 1000, length: 600)
     )
 
-    let countsBefore = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let countsBefore = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
     #expect(countsBefore.chunks > 0)
 
     await HTMLSyntaxHighlighter.invalidatePlannerCache(
@@ -114,7 +114,7 @@ import AppKit
         newTextLength: html.utf16.count + 3
     )
 
-    let countsAfter = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let countsAfter = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
 
     #expect(countsAfter.chunks > 0)
     #expect(countsAfter.chunks < countsBefore.chunks)
@@ -132,14 +132,14 @@ import AppKit
         text: html,
         requestedRange: firstRange
     )
-    let afterFirst = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let afterFirst = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
 
     _ = await HTMLSyntaxHighlighter.plannedRangeHighlight(
         documentID: docID,
         text: html,
         requestedRange: neighboringRange
     )
-    let afterNeighbor = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let afterNeighbor = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
 
     #expect(afterFirst.chunks > 0)
     #expect(afterNeighbor.chunks >= afterFirst.chunks)
@@ -156,7 +156,7 @@ import AppKit
         text: html,
         requestedRange: targetRange
     )
-    let before = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let before = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
 
     await HTMLSyntaxHighlighter.invalidatePlannerCache(
         documentID: docID,
@@ -170,7 +170,7 @@ import AppKit
         text: html,
         requestedRange: targetRange
     )
-    let after = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let after = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
 
     #expect(before.chunks > 0)
     #expect(after.chunks >= before.chunks)
@@ -205,7 +205,7 @@ import AppKit
         )
     }
 
-    let counts = await HTMLSyntaxHighlighter.debugPlannerCacheCounts(documentID: docID)
+    let counts = await HTMLSyntaxHighlighter.plannerCacheCounts(documentID: docID)
     #expect(counts.plans <= 24)
     #expect(counts.chunks <= 192)
 }

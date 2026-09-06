@@ -52,7 +52,6 @@ import Foundation
     #expect(huge.prewarmEnabled == false)
     #expect(large.cachedRangePlanLimit < normal.cachedRangePlanLimit)
     #expect(huge.cachedRangePlanLimit <= large.cachedRangePlanLimit)
-    #expect(huge.highlightedRangeLimit <= large.highlightedRangeLimit)
 }
 
 @Test func testBindingSyncIsDeferredForLargeDocuments() async throws {

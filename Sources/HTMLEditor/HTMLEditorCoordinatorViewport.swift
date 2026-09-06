@@ -409,7 +409,7 @@ extension HTMLEditor.Coordinator {
 
     @MainActor
     func invalidateCaches(for edit: PendingEdit, newTextLength: Int) {
-        let invalidationStart = max(0, edit.affectedRange.location - 256)
+        let invalidationStart = max(0, edit.affectedRange.location - HTMLEditorDocumentSize.editInvalidationRadius)
 
         cachedRangePlans.removeAll { cachedPlan in
             NSMaxRange(cachedPlan.range) > invalidationStart

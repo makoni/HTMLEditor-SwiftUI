@@ -2,7 +2,7 @@
 import AppKit
 import Foundation
 
-public struct HTMLSyntaxHighlighter {
+public enum HTMLSyntaxHighlighter {
     static let maxHighlightLength = 50_000
 
     enum HighlightRole: Sendable, Equatable, Hashable {
@@ -22,7 +22,6 @@ public struct HTMLSyntaxHighlighter {
     }
 
     private static let planner = HTMLHighlightPlanner()
-    private static let sharedPlannerDocumentID = UUID()
 
     public static func highlight(html: String, theme: HTMLEditorColorScheme) -> NSAttributedString {
         if html.utf16.count > maxHighlightLength {
@@ -33,17 +32,9 @@ public struct HTMLSyntaxHighlighter {
         return attributedString(html: html, theme: theme, plan: plan)
     }
 
-    static func plannedFullHighlight(html: String) async -> HighlightPlan? {
-        await plannedFullHighlight(documentID: sharedPlannerDocumentID, html: html)
-    }
-
     static func plannedFullHighlight(documentID: UUID, html: String) async -> HighlightPlan? {
         guard html.utf16.count <= maxHighlightLength else { return nil }
         return await planner.fullPlan(for: html, documentID: documentID)
-    }
-
-    static func plannedRangeHighlight(text: String, requestedRange: NSRange) async -> HighlightPlan {
-        await plannedRangeHighlight(documentID: sharedPlannerDocumentID, text: text, requestedRange: requestedRange)
     }
 
     static func plannedRangeHighlight(documentID: UUID, text: String, requestedRange: NSRange) async -> HighlightPlan {
@@ -68,8 +59,8 @@ public struct HTMLSyntaxHighlighter {
         await planner.clear(documentID: documentID)
     }
 
-    static func debugPlannerCacheCounts(documentID: UUID) async -> (plans: Int, chunks: Int) {
-        await planner.debugCounts(documentID: documentID)
+    static func plannerCacheCounts(documentID: UUID) async -> (plans: Int, chunks: Int) {
+        await planner.counts(documentID: documentID)
     }
 
     static func attributedString(html: String, theme: HTMLEditorColorScheme, plan: HighlightPlan?) -> NSAttributedString {
@@ -106,6 +97,7 @@ public struct HTMLSyntaxHighlighter {
         return attributed
     }
 
+    @available(*, deprecated, message: "Writes colours straight into NSTextStorage, which breaks undo and can re-enter textDidChange. The editor applies highlights as temporary attributes on NSLayoutManager instead.")
     public static func highlightRange(
         in textStorage: NSTextStorage,
         range: NSRange,
@@ -286,10 +278,5 @@ public struct HTMLSyntaxHighlighter {
     }
 }
 
-extension NSRange {
-    func toOptional() -> NSRange? {
-        location != NSNotFound ? self : nil
-    }
-}
 
 #endif

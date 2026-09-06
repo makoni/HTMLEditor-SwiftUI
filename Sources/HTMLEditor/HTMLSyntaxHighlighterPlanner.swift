@@ -78,9 +78,9 @@ actor HTMLHighlightPlanner {
         replacementUTF16Length: Int,
         newTextLength: Int
     ) {
-        let planInvalidationStart = max(0, editRange.location - 256)
+        let planInvalidationStart = max(0, editRange.location - HTMLEditorDocumentSize.editInvalidationRadius)
         let chunkInvalidationStart = HTMLHighlightPlanBuilder.chunkStart(for: planInvalidationStart)
-        let planInvalidationEnd = max(planInvalidationStart, editRange.location + max(editRange.length, replacementUTF16Length) + 256)
+        let planInvalidationEnd = max(planInvalidationStart, editRange.location + max(editRange.length, replacementUTF16Length) + HTMLEditorDocumentSize.editInvalidationRadius)
         let chunkInvalidationEnd = HTMLHighlightPlanBuilder.chunkEnd(forExclusiveLocation: planInvalidationEnd)
         let lengthDelta = replacementUTF16Length - editRange.length
 
@@ -123,7 +123,7 @@ actor HTMLHighlightPlanner {
         cachedChunks.removeAll { $0.key.documentID == documentID }
     }
 
-    func debugCounts(documentID: UUID) -> (plans: Int, chunks: Int) {
+    func counts(documentID: UUID) -> (plans: Int, chunks: Int) {
         (
             plans: cachedPlans.filter { $0.key.documentID == documentID }.count,
             chunks: cachedChunks.filter { $0.key.documentID == documentID }.count

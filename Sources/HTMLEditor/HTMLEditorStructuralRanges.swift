@@ -3,7 +3,7 @@ import Foundation
 
 extension HTMLEditor {
     nonisolated static func structuralAlignmentRadius(forTextLength textLength: Int) -> Int {
-        textLength > 150_000 ? 160 : 224
+        textLength > HTMLEditorDocumentSize.conservative ? 160 : 224
     }
 
     nonisolated static func structuralDirtyRange(
