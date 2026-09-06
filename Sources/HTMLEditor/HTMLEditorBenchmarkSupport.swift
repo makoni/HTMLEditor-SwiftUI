@@ -35,11 +35,17 @@ public enum HTMLEditorBenchmarkSupport {
         ]
 
         results += await MainActor.run {
-            [
+            var mainActorResults = [
                 benchmarkLayoutVisibleRangeMap(sampleHTML),
                 benchmarkApplyTemporaryVisiblePlan(sampleHTML),
                 benchmarkPlanOverTextStorageString(sampleHTML)
             ]
+            // Opt-in: it hosts a window and drives the real edit path, which is
+            // slower and needs a usable AppKit session.
+            if ProcessInfo.processInfo.environment["HTML_EDITOR_BENCHMARK_KEYSTROKE"] != nil {
+                mainActorResults += benchmarkKeystrokePath(largeHTML)
+            }
+            return mainActorResults
         }
 
         results += await [
@@ -316,6 +322,97 @@ public enum HTMLEditorBenchmarkSupport {
         return measureSync(label: "bench-planned-full-textstorage-string", iterations: 20) {
             _ = HTMLHighlightPlanBuilder.fullPlan(for: liveString)
         }
+    }
+
+    /// The per-keystroke cost of the real edit path, with the text view hosted in
+    /// a window so that layout invalidation and drawing actually happen.
+    ///
+    /// Every other row here measures a leaf.  This one exists because the leaves
+    /// were all cheap while typing in a large document was not: putting the view
+    /// in a window made the coordinator's synchronous work an order of magnitude
+    /// more expensive, which no isolated benchmark could show.
+    @MainActor
+    private static func benchmarkKeystrokePath(_ html: String) -> [HTMLEditorBenchmarkResult] {
+        let theme = HTMLEditorColorScheme(
+            foreground: .black, background: .white, tag: .red,
+            attributeName: .blue, attributeValue: .green,
+            font: .monospacedSystemFont(ofSize: 12, weight: .regular)
+        )
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 900, height: 700))
+        textView.isRichText = false
+        scrollView.documentView = textView
+        textView.string = html
+        textView.layoutManager?.allowsNonContiguousLayout = true
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
+
+        // The window must actually be on screen: with the view unhosted, drawing
+        // is skipped and the coordinator's work measures an order of magnitude
+        // cheaper than it is in the app.
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = scrollView
+        window.orderBack(nil)
+
+        let coordinator = HTMLEditor.Coordinator(
+            HTMLEditor(html: .constant(html), theme: HTMLEditorTheme(light: theme, dark: theme))
+        )
+        textView.delegate = coordinator
+        coordinator.previousText = html
+
+        let caretStart = html.utf16.count / 2
+        textView.setSelectedRange(NSRange(location: caretStart, length: 0))
+        textView.scrollRangeToVisible(NSRange(location: caretStart, length: 0))
+
+        let visibleWindow = coordinator.visibleHighlightWindow(
+            for: textView, scrollView: scrollView,
+            textLength: textView.string.utf16.count, expansion: 200
+        )
+        let seed = HTMLHighlightPlanBuilder.rangePlan(for: textView.string, requestedRange: visibleWindow)
+        coordinator.visibleHighlightState.replace(with: seed)
+        if let layoutManager = textView.layoutManager {
+            HTMLSyntaxHighlighter.applyTemporary(plan: seed, to: layoutManager, theme: theme)
+        }
+
+        var insertSamples: [Double] = []
+        var coordinatorSamples: [Double] = []
+        var drawSamples: [Double] = []
+
+        for offset in 0..<40 {
+            let insertRange = NSRange(location: caretStart + offset, length: 0)
+
+            let insertStart = DispatchTime.now().uptimeNanoseconds
+            textView.textStorage?.replaceCharacters(in: insertRange, with: "x")
+            insertSamples.append(Double(DispatchTime.now().uptimeNanoseconds - insertStart) / 1_000_000)
+
+            coordinator.pendingEdit = HTMLEditor.Coordinator.PendingEdit(
+                affectedRange: insertRange, replacementUTF16Length: 1
+            )
+            let coordinatorStart = DispatchTime.now().uptimeNanoseconds
+            coordinator.textDidChange(
+                Notification(name: NSText.didChangeNotification, object: textView)
+            )
+            coordinatorSamples.append(Double(DispatchTime.now().uptimeNanoseconds - coordinatorStart) / 1_000_000)
+
+            let drawStart = DispatchTime.now().uptimeNanoseconds
+            if let layoutManager = textView.layoutManager, let container = textView.textContainer {
+                layoutManager.ensureLayout(forBoundingRect: scrollView.documentVisibleRect, in: container)
+            }
+            textView.display()
+            drawSamples.append(Double(DispatchTime.now().uptimeNanoseconds - drawStart) / 1_000_000)
+        }
+
+        return [
+            result(label: "bench-keystroke-appkit-insert", samples: insertSamples),
+            result(label: "bench-keystroke-coordinator", samples: coordinatorSamples),
+            result(label: "bench-keystroke-layout-and-draw", samples: drawSamples)
+        ]
     }
 
     private static func measure(

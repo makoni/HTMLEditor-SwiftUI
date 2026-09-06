@@ -448,13 +448,35 @@ extension HTMLEditor.Coordinator {
             return
         }
 
+        // Deliberately no repaint here.  refreshImmediateEditHighlightAfterEdit
+        // runs in this same runloop turn and applies a plan merged from exactly
+        // this remapped plan, over the same region, so painting twice only
+        // doubled the temporary-attribute work.  That is cheap in isolation but
+        // not once the view is in a window: measured on a 13 MB document, the
+        // second apply cost ~1.9 ms of the ~4.6 ms textDidChange spends on the
+        // main thread per keystroke.  Nothing is drawn between the two calls, so
+        // dropping this one is invisible.
+        //
+        // The stale-prewarm hazard that makes this region delicate does not
+        // apply: prewarm is disabled above the conservative threshold, and below
+        // it the immediate pass covers the same range either way.
+        _ = (preservedPlan, previousVisiblePlan, textStorage)
+    }
+
+    /// Paints whatever plan is currently tracked as visible.  Used as the
+    /// fallback when the immediate local pass has no range to work with, so the
+    /// remapped plan still reaches the screen.
+    @MainActor
+    func repaintVisiblePlan(textView: NSTextView) {
+        guard let plan = visibleHighlightState.plan,
+              let textStorage = textView.textStorage else { return }
+
         performVisibleRangeHighlighting(
-            plan: preservedPlan,
+            plan: plan,
             theme: parent.theme.current(for: NSApp.effectiveAppearance),
             textStorage: textStorage,
             replacesVisibleOverlay: true,
-            clearsDirtyRange: false,
-            previousVisiblePlan: previousVisiblePlan
+            clearsDirtyRange: false
         )
     }
 

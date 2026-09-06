@@ -38,6 +38,10 @@ extension HTMLEditor.Coordinator {
         newTextLength: Int
     ) {
         guard let dirtyRange = visibleHighlightState.dirtyRange else {
+            // preserveVisibleHighlightAfterEdit leaves the repaint to this pass,
+            // so if there is nothing to repaint locally the remapped plan still
+            // has to be applied.
+            repaintVisiblePlan(textView: textView)
             return
         }
 
@@ -53,6 +57,11 @@ extension HTMLEditor.Coordinator {
             // structural dirty range immediately instead of leaving a brief plain
             // text gap until the delayed visible-range pass catches up.
             immediateRange = dirtyRange
+        }
+
+        guard immediateRange.length > 0 else {
+            repaintVisiblePlan(textView: textView)
+            return
         }
 
         applyLocalDirtyHighlight(in: immediateRange, textView: textView)
