@@ -15,17 +15,14 @@
 - SwiftUI `HTMLEditor` backed by AppKit for macOS editing behavior.
 - HTML syntax highlighting for tags, attribute names, and attribute values.
 - Custom light and dark themes with configurable fonts and colors.
-- Adaptive highlighting pipeline:
-  - full semantic highlighting for smaller HTML documents
-  - viewport-first highlighting for large documents
-  - performance-oriented large-file mode for very large HTML inputs
-- Large-document optimizations including:
-  - visible-range plan caching
-  - document-scoped invalidation
-  - structural dirty-range alignment
-  - burst-coalesced edit repainting
-  - scroll-idle semantic refresh
-  - automatic non-contiguous layout in large-file mode
+- Built on **TextKit 2**, which lays out only the visible portion of the
+  document. Highlighting is pulled from an `NSTextContentStorageDelegate`:
+  TextKit asks for each paragraph as it lays it out, so there is no scheduling,
+  no prewarming and no visible range to keep in step with the viewport.
+- Colours are display attributes, never written into the text storage, so undo
+  stays intact.
+- Tuned against multi-megabyte documents, including the very long single lines
+  minified HTML is made of.
 - Benchmark target for repeatable performance measurements.
 
 ## Installation
@@ -109,13 +106,35 @@ struct CustomThemeView: View {
 
 ## Large HTML Behavior
 
-The editor uses different runtime strategies depending on document size.
+The editor is meant for both short snippets and multi-megabyte files. Two
+things behave differently once a document gets large, and both are visible from
+the outside, so they are worth knowing about.
 
-- **Smaller documents** use fuller semantic highlighting.
-- **Large documents** switch to viewport-first highlighting and stronger cache reuse.
-- **Very large documents** use a more conservative editing mode with localized repaint, delayed wider recovery, and scroll-idle semantic work to keep interaction responsive.
+**Very long lines are not coloured.** A paragraph longer than 6 000 UTF-16 units
+is left at the base colour. That is far above anything hand-written — a
+formatted HTML line is rarely past a few hundred units — and below the minified
+runs that make typing slow: a paragraph carrying a thousand attribute runs costs
+TextKit roughly seven times more to lay out than uniform text, which measured
+27.5 ms per keystroke against 4.0 ms on a 28 000-character line.
 
-This means the editor is optimized for both short snippets and multi-megabyte HTML files. Typing keeps full-detail colouring at every size; bulk edits in very large documents fall back to tag-only colouring briefly and recover through a delayed full-detail pass.
+**The binding lags on large documents.** Publishing through `html` makes SwiftUI
+compare the old and new value, which for a multi-megabyte string costs about
+200 ms on the main thread. The editor therefore waits for a pause in typing
+before publishing, and the wait grows with the document:
+
+| Document size (UTF-16 units) | Delay before publishing |
+| --- | --- |
+| up to 50 000 | immediate |
+| 50 000 – 150 000 | 125 ms |
+| 150 000 – 1 000 000 | 800 ms |
+| over 1 000 000 | 2 s |
+
+The text view itself is always current; it is the value a host reads back that
+lags. Ending editing — moving focus away — flushes immediately.
+
+Setting `HTMLEDITOR_TEXTKIT=1` in the environment creates the text view with
+TextKit 1 instead. It is markedly slower on large documents and exists only as
+an escape hatch.
 
 ## Benchmarks
 
