@@ -24,6 +24,10 @@ enum HTMLEditorDocumentSize {
     /// Lower edge of the hysteresis band for the non-contiguous layout switch.
     static let nonContiguousLayoutOff = 40_000
 
+    /// Past this, publishing the document through the binding is expensive
+    /// enough that it has to be rare.
+    static let veryLarge = 1_000_000
+
     /// Longest paragraph that still gets syntax colouring.
     ///
     /// Well above anything hand-written — a formatted HTML line is rarely past a
@@ -135,9 +139,28 @@ extension HTMLEditor {
         )
     }
 
+    /// How long to wait after the last keystroke before publishing the document
+    /// through the binding.
+    ///
+    /// The write is not cheap, and the cost is not ours: assigning to a SwiftUI
+    /// `@State` makes AttributeGraph compare the old and new values to decide
+    /// whether anything changed, and comparing two multi-megabyte strings runs
+    /// Swift's canonical-equivalence path — normalise both sides, walk them
+    /// scalar by scalar. On a 13 MB document that is roughly 200 ms, on the main
+    /// thread, and it showed up in a trace as a stall of exactly that length
+    /// after every pause in typing.
+    ///
+    /// Nothing here can make that comparison cheaper, so the delay grows with
+    /// the document instead: pauses inside a burst of typing stop triggering it,
+    /// and `textDidEndEditing` still flushes immediately, so the binding is
+    /// never left stale once the user moves on.
     nonisolated static func bindingSyncDelay(forTextLength textLength: Int) -> UInt64? {
+        if textLength > HTMLEditorDocumentSize.veryLarge {
+            return 2_000_000_000
+        }
+
         if textLength > HTMLEditorDocumentSize.conservative {
-            return 225_000_000
+            return 800_000_000
         }
 
         if textLength > HTMLEditorDocumentSize.viewportFirst {

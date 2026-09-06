@@ -101,6 +101,25 @@ import Foundation
     #expect(HTMLEditor.bindingSyncDelay(forTextLength: 180_000) != nil)
 }
 
+@Test func testBindingSyncDelayGrowsWithTheDocument() async throws {
+    // Publishing through the binding makes SwiftUI compare the old and new
+    // values, and comparing multi-megabyte strings costs hundreds of
+    // milliseconds on the main thread. The bigger the document, the rarer that
+    // has to be.
+    let large = HTMLEditor.bindingSyncDelay(forTextLength: 80_000)!
+    let conservative = HTMLEditor.bindingSyncDelay(
+        forTextLength: HTMLEditorDocumentSize.conservative + 1
+    )!
+    let veryLarge = HTMLEditor.bindingSyncDelay(
+        forTextLength: HTMLEditorDocumentSize.veryLarge + 1
+    )!
+
+    #expect(large < conservative)
+    #expect(conservative < veryLarge)
+    // A pause inside a burst of typing must not trigger it on a huge document.
+    #expect(veryLarge >= 1_000_000_000)
+}
+
 @Test func testScrollHighlightDelaySlowsDownForLargeDocuments() async throws {
     let normal = HTMLEditor.semanticHighlightDelay(forTextLength: 10_000, trigger: .scroll)
     let large = HTMLEditor.semanticHighlightDelay(forTextLength: 80_000, trigger: .scroll)
