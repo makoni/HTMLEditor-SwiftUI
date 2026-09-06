@@ -45,7 +45,8 @@ enum HTMLHighlightPlanBuilder {
         if expandedRange.length > 2000 {
             let center = requestedRange.location + requestedRange.length / 2
             let clampedStart = max(0, center - 1000)
-            expandedRange = NSRange(location: clampedStart, length: min(2000, textLength - clampedStart))
+            // max(0,) so an out-of-bounds request cannot produce a negative length.
+            expandedRange = NSRange(location: clampedStart, length: max(0, min(2000, textLength - clampedStart)))
         }
 
         if expandedRange.length < 1000 && expandedRange.length > 0 {

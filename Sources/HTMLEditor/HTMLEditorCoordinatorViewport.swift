@@ -41,6 +41,10 @@ extension HTMLEditor.Coordinator {
             } catch {
                 return
             }
+            // No documentVersion check here, unlike the other scheduled tasks:
+            // this one reads the live text storage and viewport after waking, so
+            // it works from current state by construction rather than from a
+            // snapshot that could have gone stale.
             guard let self, let textView, let scrollView else { return }
             let visibleRect = scrollView.documentVisibleRect
             guard let layoutManager = textView.layoutManager,
@@ -301,7 +305,7 @@ extension HTMLEditor.Coordinator {
 
         prewarmTask?.cancel()
 
-        let primaryForward = max(visibleRange.length * 2, visibleRange.length)
+        let primaryForward = visibleRange.length * 2
         let secondaryBackward = max(visibleRange.length / 2, 1)
         let maxLength = textSnapshot.utf16.count
         let beforeRange = NSRange(

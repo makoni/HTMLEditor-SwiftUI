@@ -9,7 +9,9 @@
 import AppKit
 
 // MARK: - Theme & ColorScheme
-@MainActor
+/// Deliberately not `@MainActor`: the type is two immutable colour schemes and
+/// a pure lookup, and isolating it forced `.default` — the default argument of
+/// `HTMLEditor.init` — onto the main actor for no benefit.
 public struct HTMLEditorTheme: Sendable {
     public init(light: HTMLEditorColorScheme, dark: HTMLEditorColorScheme) {
         self.light = light

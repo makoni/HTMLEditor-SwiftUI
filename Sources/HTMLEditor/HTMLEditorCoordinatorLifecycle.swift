@@ -5,9 +5,14 @@ import QuartzCore
 extension HTMLEditor.Coordinator {
     @MainActor
     func updateLayoutPolicy(textView: NSTextView, textLength: Int) {
-        textView.layoutManager?.allowsNonContiguousLayout = HTMLEditor.shouldUseNonContiguousLayout(
-            forTextLength: textLength
+        guard let layoutManager = textView.layoutManager else { return }
+        let currentlyEnabled = layoutManager.allowsNonContiguousLayout
+        let shouldEnable = HTMLEditor.shouldUseNonContiguousLayout(
+            forTextLength: textLength,
+            currentlyEnabled: currentlyEnabled
         )
+        guard shouldEnable != currentlyEnabled else { return }
+        layoutManager.allowsNonContiguousLayout = shouldEnable
     }
 
     @MainActor
@@ -270,6 +275,10 @@ extension HTMLEditor.Coordinator {
         textView.font = currentTheme.font
         textView.backgroundColor = currentTheme.background
         textView.textColor = currentTheme.foreground
+        // The knob was pinned to .light, which is near-invisible over a light
+        // background; follow the appearance instead.
+        textView.enclosingScrollView?.scrollerKnobStyle =
+            NSApp.effectiveAppearance.name == .darkAqua ? .light : .default
 
         let currentHTML = textView.string
         if let cachedFullHighlightPlan,

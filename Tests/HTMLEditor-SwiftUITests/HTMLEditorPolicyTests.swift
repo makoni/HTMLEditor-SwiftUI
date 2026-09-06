@@ -198,8 +198,39 @@ import Foundation
 }
 
 @Test func testNonContiguousLayoutAppliesOnlyToLargeDocuments() async throws {
-    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: 10_000) == false)
-    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: 80_000) == true)
+    #expect(
+        HTMLEditor.shouldUseNonContiguousLayout(forTextLength: 10_000, currentlyEnabled: false) == false
+    )
+    #expect(
+        HTMLEditor.shouldUseNonContiguousLayout(forTextLength: 80_000, currentlyEnabled: false) == true
+    )
+}
+
+@Test func testNonContiguousLayoutDoesNotFlipAtTheThreshold() async throws {
+    // Turning the switch back off forces a full relayout, so a document parked
+    // on the threshold must not toggle on every keystroke.
+    let threshold = HTMLEditorDocumentSize.viewportFirst
+
+    // Crossing upwards enables it...
+    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: threshold, currentlyEnabled: false) == false)
+    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: threshold + 1, currentlyEnabled: false) == true)
+
+    // ...and dropping a character back below it does not disable it again.
+    #expect(HTMLEditor.shouldUseNonContiguousLayout(forTextLength: threshold, currentlyEnabled: true) == true)
+    #expect(
+        HTMLEditor.shouldUseNonContiguousLayout(
+            forTextLength: HTMLEditorDocumentSize.nonContiguousLayoutOff + 1,
+            currentlyEnabled: true
+        ) == true
+    )
+
+    // Only a document that has genuinely shrunk goes back to contiguous layout.
+    #expect(
+        HTMLEditor.shouldUseNonContiguousLayout(
+            forTextLength: HTMLEditorDocumentSize.nonContiguousLayoutOff,
+            currentlyEnabled: true
+        ) == false
+    )
 }
 
 @Test func testLocalDirtyHighlightRangeIsClamped() async throws {

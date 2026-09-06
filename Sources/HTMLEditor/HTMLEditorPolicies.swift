@@ -20,6 +20,9 @@ enum HTMLEditorDocumentSize {
     /// How far either side of an edit cached plans and chunks are dropped
     /// before the remainder is remapped.
     static let editInvalidationRadius = 256
+
+    /// Lower edge of the hysteresis band for the non-contiguous layout switch.
+    static let nonContiguousLayoutOff = 40_000
 }
 
 /// How big the edit was.  Deliberately independent of document size: the two
@@ -228,8 +231,18 @@ extension HTMLEditor {
         textLength > HTMLEditorDocumentSize.viewportFirst
     }
 
-    nonisolated static func shouldUseNonContiguousLayout(forTextLength textLength: Int) -> Bool {
-        textLength > HTMLEditorDocumentSize.viewportFirst
+    /// Switching *back* to contiguous layout forces a full relayout — tens of
+    /// milliseconds on a few hundred KB — so a document sitting on the threshold
+    /// must not flip on every keystroke.  Turn on at the threshold, off only
+    /// once the document has shrunk well below it.
+    nonisolated static func shouldUseNonContiguousLayout(
+        forTextLength textLength: Int,
+        currentlyEnabled: Bool
+    ) -> Bool {
+        if currentlyEnabled {
+            return textLength > HTMLEditorDocumentSize.nonContiguousLayoutOff
+        }
+        return textLength > HTMLEditorDocumentSize.viewportFirst
     }
 
 }

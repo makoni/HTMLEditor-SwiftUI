@@ -125,13 +125,30 @@ public enum HTMLSyntaxHighlighter {
 
     static func applyTemporary(plan: HighlightPlan, to layoutManager: NSLayoutManager, theme: HTMLEditorColorScheme) {
         clearTemporaryHighlights(in: layoutManager, range: plan.coveredRange)
+        apply(spans: plan.spans, to: layoutManager, theme: theme)
+    }
 
-        for span in plan.spans {
+    /// A dense viewport is a few hundred spans, and this runs on the main thread
+    /// several times per keystroke, so the per-role dictionaries are built once
+    /// rather than rebuilt for every span.
+    private static func apply(
+        spans: [HighlightSpan],
+        to layoutManager: NSLayoutManager,
+        theme: HTMLEditorColorScheme
+    ) {
+        let tagAttributes: [NSAttributedString.Key: Any] = [.foregroundColor: theme.tag]
+        let nameAttributes: [NSAttributedString.Key: Any] = [.foregroundColor: theme.attributeName]
+        let valueAttributes: [NSAttributedString.Key: Any] = [.foregroundColor: theme.attributeValue]
+
+        for span in spans {
             guard span.range.location >= 0 else { continue }
-            layoutManager.addTemporaryAttributes(
-                [.foregroundColor: color(for: span.role, theme: theme)],
-                forCharacterRange: span.range
-            )
+            let attributes: [NSAttributedString.Key: Any]
+            switch span.role {
+            case .tag: attributes = tagAttributes
+            case .attributeName: attributes = nameAttributes
+            case .attributeValue: attributes = valueAttributes
+            }
+            layoutManager.addTemporaryAttributes(attributes, forCharacterRange: span.range)
         }
     }
 
@@ -174,13 +191,7 @@ public enum HTMLSyntaxHighlighter {
             clearTemporaryHighlights(in: layoutManager, range: trailingRange)
         }
 
-        for span in plan.spans {
-            guard span.range.location >= 0 else { continue }
-            layoutManager.addTemporaryAttributes(
-                [.foregroundColor: color(for: span.role, theme: theme)],
-                forCharacterRange: span.range
-            )
-        }
+        apply(spans: plan.spans, to: layoutManager, theme: theme)
     }
 
     static func filteredPlan(_ plan: HighlightPlan, detail: HTMLEditorHighlightDetail) -> HighlightPlan {

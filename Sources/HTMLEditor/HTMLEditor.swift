@@ -29,7 +29,8 @@ public struct HTMLEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.layoutManager?.allowsNonContiguousLayout = HTMLEditor.shouldUseNonContiguousLayout(
-            forTextLength: html.utf16.count
+            forTextLength: html.utf16.count,
+            currentlyEnabled: false
         )
         textView.usesRuler = false
         textView.isRulerVisible = false
@@ -52,7 +53,6 @@ public struct HTMLEditor: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .bezelBorder
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.scrollerKnobStyle = .light
         scrollView.verticalScrollElasticity = .allowed
         scrollView.horizontalScrollElasticity = .none
 
