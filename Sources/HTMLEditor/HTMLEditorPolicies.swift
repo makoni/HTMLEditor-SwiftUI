@@ -187,20 +187,5 @@ extension HTMLEditor {
         textLength > HTMLSyntaxHighlighter.maxHighlightLength
     }
 
-    nonisolated static func textIdentity(for text: String) -> Int {
-        textIdentity(for: text as NSString)
-    }
-
-    nonisolated static func textIdentity(for text: NSString) -> Int {
-        let length = text.length
-        guard length > 0 else { return 0 }
-
-        var hasher = Hasher()
-        hasher.combine(length)
-        hasher.combine(text.character(at: 0))
-        if length > 1 { hasher.combine(text.character(at: length - 1)) }
-        if length > 2 { hasher.combine(text.character(at: length / 2)) }
-        return hasher.finalize()
-    }
 }
 #endif

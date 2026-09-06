@@ -16,7 +16,6 @@ extension HTMLEditor.Coordinator {
         detailRecoveryTask?.cancel()
         updateLayoutPolicy(textView: textView, textLength: html.utf16.count)
         previousText = html
-        displayedTextIdentity = HTMLEditor.textIdentity(for: html)
         pendingLocalBindingSyncHTML = nil
         awaitingLocalBindingEcho = false
         documentVersion &+= 1
@@ -36,12 +35,21 @@ extension HTMLEditor.Coordinator {
 
     @MainActor
     func shouldApplyExternalUpdate(incomingHTML: String) -> Bool {
-        if awaitingLocalBindingEcho {
-            awaitingLocalBindingEcho = false
-            return false
-        }
-
-        return HTMLEditor.textIdentity(for: incomingHTML) != displayedTextIdentity
+        // `previousText` is what the text view is showing, so an exact match is
+        // either the echo of our own binding write or a genuine no-op.  Either
+        // way there is nothing to apply.
+        //
+        // This used to compare a four-sample fingerprint instead, which is fine
+        // as a cache key but not as document equality: any same-length change
+        // that missed the sampled offsets — a find-and-replace, an equal-length
+        // tag or attribute rename — read as "no change" and was dropped.
+        //
+        // The echo flag is only consulted for that exact match.  Consuming it
+        // unconditionally swallowed updates from a parent that normalises in its
+        // setter, since the value coming back then differs from what was sent.
+        let isEcho = incomingHTML == previousText
+        awaitingLocalBindingEcho = false
+        return !isEcho
     }
 
     @MainActor
@@ -227,9 +235,20 @@ extension HTMLEditor.Coordinator {
         return NSRange(location: expandedStart, length: max(0, expandedEnd - expandedStart))
     }
 
+    /// Re-applies the theme when the `theme` parameter itself changed.
+    /// Appearance switches arrive through `systemAppearanceChanged`; this covers
+    /// a caller swapping the theme while the appearance stays put.
+    @MainActor
+    func applyColorSchemeChangeIfNeeded(textView: NSTextView) {
+        let currentScheme = parent.theme.current(for: NSApp.effectiveAppearance)
+        guard currentScheme != appliedColorScheme else { return }
+        systemAppearanceChanged(textView: textView)
+    }
+
     @MainActor
     func systemAppearanceChanged(textView: NSTextView) {
         let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
+        appliedColorScheme = currentTheme
         textView.font = currentTheme.font
         textView.backgroundColor = currentTheme.background
         textView.textColor = currentTheme.foreground

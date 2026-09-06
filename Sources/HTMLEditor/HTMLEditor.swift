@@ -42,8 +42,8 @@ public struct HTMLEditor: NSViewRepresentable {
 
         textView.string = html
         textView.coordinator = context.coordinator
+        context.coordinator.appliedColorScheme = currentTheme
         context.coordinator.previousText = html
-        context.coordinator.displayedTextIdentity = HTMLEditor.textIdentity(for: html)
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -84,10 +84,18 @@ public struct HTMLEditor: NSViewRepresentable {
 
     public func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        // SwiftUI hands over a fresh HTMLEditor value on every update, so without
+        // this the coordinator keeps the binding and theme it captured at init:
+        // `theme` would be write-once, and edits would keep flowing back into a
+        // binding that no longer points at the document on screen.
+        context.coordinator.parent = self
         context.coordinator.updateLayoutPolicy(textView: textView, textLength: html.utf16.count)
+
         if context.coordinator.shouldApplyExternalUpdate(incomingHTML: html) {
             let currentTheme = theme.current(for: NSApp.effectiveAppearance)
             context.coordinator.scheduleExternalHighlightUpdate(html: html, theme: currentTheme, textView: textView)
+        } else {
+            context.coordinator.applyColorSchemeChangeIfNeeded(textView: textView)
         }
     }
 
@@ -135,7 +143,7 @@ public struct HTMLEditor: NSViewRepresentable {
         var lastVisibleRange = NSRange(location: 0, length: 0)
         var highlightCoverage = HTMLEditorHighlightCoverage()
         var visibleHighlightState = HTMLEditorVisibleHighlightState()
-        var displayedTextIdentity: Int = 0
+        var appliedColorScheme: HTMLEditorColorScheme?
 
         init(_ parent: HTMLEditor) {
             self.parent = parent
@@ -175,7 +183,6 @@ public struct HTMLEditor: NSViewRepresentable {
             )
 
             previousText = newText
-            displayedTextIdentity = HTMLEditor.textIdentity(for: newText)
             documentVersion &+= 1
             updateLayoutPolicy(textView: textView, textLength: newLength)
             cachedFullHighlightPlan = nil
