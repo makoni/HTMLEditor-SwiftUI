@@ -50,6 +50,7 @@ public struct HTMLEditor: NSViewRepresentable {
         // TextKit 2 pulls paragraph styling from this delegate as it lays the
         // viewport out, so it must be in place before any layout happens.
         textView.textContentStorage?.delegate = context.coordinator
+        context.coordinator.usesPulledHighlighting = textView.textLayoutManager != nil
 
         textView.string = html
         textView.coordinator = context.coordinator
@@ -168,6 +169,12 @@ public struct HTMLEditor: NSViewRepresentable {
         var highlightCoverage = HTMLEditorHighlightCoverage()
         var visibleHighlightState = HTMLEditorVisibleHighlightState()
         var appliedColorScheme: HTMLEditorColorScheme?
+        /// True when highlighting is pulled from the content storage delegate.
+        /// The whole push pipeline — scheduled visible-range passes, prewarm,
+        /// coverage bookkeeping, the scroll observer — exists to decide *when*
+        /// to paint, and under TextKit 2 the framework decides that by asking.
+        /// Running it anyway is pure main-thread work competing with drawing.
+        var usesPulledHighlighting = false
         /// Per-paragraph plans for the TextKit 2 pull-based path.
         var paragraphPlanCache: [ParagraphPlanKey: HTMLSyntaxHighlighter.HighlightPlan] = [:]
 
@@ -216,7 +223,7 @@ public struct HTMLEditor: NSViewRepresentable {
             prewarmTask?.cancel()
             detailRecoveryTask?.cancel()
 
-            if let pendingEdit {
+            if let pendingEdit, !usesPulledHighlighting {
                 let structuralDirtyRange = HTMLEditor.structuralDirtyRange(
                     for: pendingEdit.affectedRange,
                     replacementLength: pendingEdit.replacementUTF16Length,
@@ -255,7 +262,10 @@ public struct HTMLEditor: NSViewRepresentable {
             // Gated on how big the edit was, not how big the document is: a
             // one-character change in a multi-megabyte file is exactly the case
             // the planner's remapping was built for.
-            if let pendingEdit, magnitude == .incremental || magnitude == .medium {
+            if usesPulledHighlighting {
+                // The planner and the coverage map only feed the push pipeline.
+                self.pendingEdit = nil
+            } else if let pendingEdit, magnitude == .incremental || magnitude == .medium {
                 invalidateCaches(for: pendingEdit, newTextLength: newLength)
                 // Synchronous, so the invalidation is ordered before the plan
                 // requests the repaint schedules moments later.  As two
@@ -276,6 +286,13 @@ public struct HTMLEditor: NSViewRepresentable {
             }
 
             scheduleBindingSync(for: newText)
+
+            // Under TextKit 2 the delegate has already re-styled the edited
+            // paragraph by the time this runs; there is nothing left to schedule.
+            guard !usesPulledHighlighting else {
+                self.pendingEdit = nil
+                return
+            }
 
             guard let scrollView = textView.enclosingScrollView else { return }
             let detail = HTMLEditor.highlightDetail(

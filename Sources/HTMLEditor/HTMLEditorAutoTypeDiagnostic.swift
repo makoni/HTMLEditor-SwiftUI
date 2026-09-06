@@ -29,44 +29,62 @@ enum HTMLEditorAutoTypeDiagnostic {
             textView.setSelectedRange(NSRange(location: caret, length: 0))
             textView.scrollRangeToVisible(NSRange(location: caret, length: 0))
 
+            // Driven by a tight loop that pumps the run loop to quiescence after
+            // each keystroke, rather than by a Timer: an unfocused app has its
+            // timers coalesced by the system, which showed up as half-second
+            // gaps that had nothing to do with the editor.
+            NSApp.activate(ignoringOtherApps: true)
             let state = TypingState()
-            let timer = Timer(timeInterval: millis / 1000, repeats: true) { _ in
-                MainActor.assumeIsolated {
-                    state.step(textView: textView)
-                }
+            for _ in 0..<120 {
+                state.step(textView: textView, settle: millis / 1000)
             }
-            RunLoop.main.add(timer, forMode: .common)
-            state.timer = timer
+            state.finish()
         }
     }
 
     @MainActor
     private final class TypingState {
-        var timer: Timer?
         private var typed = 0
         private var worst: Double = 0
         private var total: Double = 0
 
-        func step(textView: NSTextView) {
-            guard typed < 120 else {
-                NSLog("AUTOTYPE done: %d keystrokes, mean %.2fms, worst %.2fms",
-                      typed, total / Double(max(typed, 1)), worst)
-                timer?.invalidate()
-                timer = nil
-                return
-            }
+        private var settleTotal: Double = 0
+        private var settleWorst: Double = 0
 
+        func step(textView: NSTextView, settle: Double) {
             let selected = textView.selectedRange()
+
             let start = DispatchTime.now().uptimeNanoseconds
             textView.insertText("x", replacementRange: selected)
-            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+            let inserted = DispatchTime.now().uptimeNanoseconds
+
+            // Everything the keystroke set in motion — layout, drawing, the
+            // deferred passes — happens on the run loop after insertText
+            // returns. That is what a person waits for, so measure it.
+            let deadline = Date().addingTimeInterval(settle)
+            while Date() < deadline {
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.002))
+            }
+            let settled = DispatchTime.now().uptimeNanoseconds
+
+            let insertMS = Double(inserted - start) / 1_000_000
+            let settleMS = Double(settled - inserted) / 1_000_000 - settle * 1000
 
             typed += 1
-            total += elapsed
-            if elapsed > worst { worst = elapsed }
-            if elapsed > 8 {
-                NSLog("AUTOTYPE slow keystroke #%d: %.2fms", typed, elapsed)
+            total += insertMS
+            settleTotal += max(0, settleMS)
+            if insertMS > worst { worst = insertMS }
+            if settleMS > settleWorst { settleWorst = settleMS }
+
+            if typed % 40 == 0 {
+                NSLog("AUTOTYPE #%d insert %.2fms settle-overrun %.2fms", typed, insertMS, settleMS)
             }
+        }
+
+        func finish() {
+            NSLog("AUTOTYPE done: %d keystrokes | insert mean %.2fms worst %.2fms | settle-overrun mean %.2fms worst %.2fms",
+                  typed, total / Double(max(typed, 1)), worst,
+                  settleTotal / Double(max(typed, 1)), settleWorst)
         }
     }
 

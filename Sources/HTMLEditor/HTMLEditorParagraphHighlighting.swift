@@ -31,13 +31,18 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
               range.length > 0,
               NSMaxRange(range) <= textStorage.length else { return nil }
 
-        let paragraph = textStorage.attributedSubstring(from: range)
         let plan = paragraphPlan(for: textStorage.string as NSString, range: range)
+        let paragraph = textStorage.attributedSubstring(from: range)
         guard !plan.spans.isEmpty else { return nil }
 
         let theme = parent.theme.current(for: NSApp.effectiveAppearance)
         let styled = NSMutableAttributedString(attributedString: paragraph)
 
+        // Batch the attribute writes. A markup-dense line carries around a
+        // thousand spans, and outside an editing transaction each write makes
+        // the attributed string re-fix its attribute runs — which is the bulk of
+        // what a keystroke inside such a line used to cost.
+        styled.beginEditing()
         for span in plan.spans {
             // Span locations are document-absolute; the paragraph copy starts at 0.
             let local = NSRange(
@@ -51,6 +56,7 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
                 range: local
             )
         }
+        styled.endEditing()
 
         return NSTextParagraph(attributedString: styled)
     }
@@ -105,4 +111,5 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
         layoutManager.invalidateLayout(for: contentStorage.documentRange)
     }
 }
+
 #endif

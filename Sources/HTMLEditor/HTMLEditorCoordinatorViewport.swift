@@ -4,6 +4,8 @@ import AppKit
 extension HTMLEditor.Coordinator {
     @MainActor
     @objc func scrollViewDidScroll(_ notification: Notification) {
+        // TextKit 2 lays the viewport out and asks for styling itself.
+        guard !usesPulledHighlighting else { return }
         guard let clipView = notification.object as? NSClipView,
               let scrollView = clipView.enclosingScrollView,
               let textView = scrollView.documentView as? NSTextView else { return }
