@@ -115,7 +115,7 @@ The editor uses different runtime strategies depending on document size.
 - **Large documents** switch to viewport-first highlighting and stronger cache reuse.
 - **Very large documents** use a more conservative editing mode with localized repaint, delayed wider recovery, and scroll-idle semantic work to keep interaction responsive.
 
-This means the editor is optimized for both short snippets and multi-megabyte HTML files, but the very-large-file mode intentionally prioritizes responsiveness over immediate full-detail recoloring.
+This means the editor is optimized for both short snippets and multi-megabyte HTML files. Typing keeps full-detail colouring at every size; bulk edits in very large documents fall back to tag-only colouring briefly and recover through a delayed full-detail pass.
 
 ## Benchmarks
 
