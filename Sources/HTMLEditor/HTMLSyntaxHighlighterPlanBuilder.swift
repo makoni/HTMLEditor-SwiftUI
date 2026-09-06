@@ -5,6 +5,13 @@ import Foundation
 enum HTMLHighlightPlanBuilder {
     static let plannerChunkSize = 512
 
+    /// How far `lineSnapped` searches for a line terminator in each direction.
+    /// Sized to stay in the same order as the 2 000-unit range clamp above it.
+    static let lineSnapRadius = 1_000
+
+    private static let lineFeed: unichar = 10
+    private static let carriageReturn: unichar = 13
+
     static func fullPlan(for html: String) -> HTMLSyntaxHighlighter.HighlightPlan {
         let nsHTML = html as NSString
         return buildPlan(in: nsHTML, coveredRange: NSRange(location: 0, length: nsHTML.length))
@@ -42,20 +49,57 @@ enum HTMLHighlightPlanBuilder {
         }
 
         if expandedRange.length < 1000 && expandedRange.length > 0 {
-            let startLocation = max(0, min(expandedRange.location, textLength - 1))
-            let endLocation = max(0, min(NSMaxRange(expandedRange) - 1, textLength - 1))
-
-            if startLocation < textLength && endLocation < textLength {
-                let lineStart = nsText.lineRange(for: NSRange(location: startLocation, length: 0)).location
-                let lineEnd = nsText.lineRange(for: NSRange(location: endLocation, length: 0))
-                let lineEndLocation = NSMaxRange(lineEnd)
-                if lineStart <= lineEndLocation && lineEndLocation <= textLength {
-                    expandedRange = NSRange(location: lineStart, length: lineEndLocation - lineStart)
-                }
-            }
+            expandedRange = lineSnapped(expandedRange, in: nsText)
         }
 
         return expandedRange
+    }
+
+    /// Grows a short range out to the line boundaries around it, searching at
+    /// most `lineSnapRadius` in each direction.
+    ///
+    /// `NSString.lineRange(for:)` scans until it finds a line terminator, so on
+    /// minified HTML — one line megabytes long — it walks the whole document,
+    /// twice, and this runs synchronously on the main thread for every
+    /// keystroke.  Bounding the search is safe because snapping is a nicety
+    /// rather than an invariant: the scanner is resumable and its plans are
+    /// chunk-aligned, so an unsnapped boundary changes which range gets covered,
+    /// not whether the result is correct.
+    static func lineSnapped(_ range: NSRange, in text: NSString) -> NSRange {
+        let textLength = text.length
+        guard range.location != NSNotFound,
+              range.location >= 0,
+              range.length > 0,
+              NSMaxRange(range) <= textLength else {
+            return range
+        }
+
+        let lowerBound = max(0, range.location - lineSnapRadius)
+        var start = range.location
+        while start > lowerBound, !isLineBreak(text.character(at: start - 1)) {
+            start -= 1
+        }
+
+        let upperBound = min(textLength, NSMaxRange(range) + lineSnapRadius)
+        var end = NSMaxRange(range)
+        while end < upperBound {
+            let character = text.character(at: end)
+            end += 1
+            if isLineBreak(character) {
+                // Keep \r\n together so the snapped range matches lineRange's
+                // treatment of the terminator.
+                if character == carriageReturn, end < textLength, text.character(at: end) == lineFeed {
+                    end += 1
+                }
+                break
+            }
+        }
+
+        return NSRange(location: start, length: end - start)
+    }
+
+    private static func isLineBreak(_ value: unichar) -> Bool {
+        value == lineFeed || value == carriageReturn
     }
 
     static func buildPlan(in text: NSString, coveredRange: NSRange) -> HTMLSyntaxHighlighter.HighlightPlan {

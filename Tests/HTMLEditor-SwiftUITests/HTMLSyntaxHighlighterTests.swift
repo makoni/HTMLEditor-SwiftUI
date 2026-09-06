@@ -314,3 +314,46 @@ import AppKit
         "Stale prewarm attributeName highlight must be cleared by the replacing plan"
     )
 }
+
+@Test func testNormalizedRangeStaysBoundedOnMinifiedHTML() async throws {
+    // Minified HTML is one line, so snapping to line boundaries used to expand
+    // every request to the whole document — synchronously, on every keystroke.
+    let row = #"<div class="row" data-id="123"><a href="https://example.com">text</a></div>"#
+    let minified = String(repeating: row, count: 4_000)
+    let textLength = minified.utf16.count
+    #expect(textLength > 250_000)
+
+    let requestedRange = NSRange(location: textLength / 2, length: 256)
+    let normalized = HTMLHighlightPlanBuilder.normalizedRange(
+        for: minified,
+        requestedRange: requestedRange
+    )
+
+    // Bounded by the request plus a snap radius on either side, not by the
+    // length of the line.
+    #expect(normalized.length <= 256 + 2 * (HTMLHighlightPlanBuilder.lineSnapRadius + 100))
+    #expect(NSMaxRange(normalized) <= textLength)
+    // Still covers what was asked for.
+    #expect(normalized.location <= requestedRange.location)
+    #expect(NSMaxRange(normalized) >= NSMaxRange(requestedRange))
+}
+
+@Test func testNormalizedRangeStillSnapsToLineBoundaries() async throws {
+    // Within the radius the behaviour is unchanged: the range grows to start
+    // just after the preceding newline and to include the following one.
+    let line = "<p class=\"a\">text</p>"
+    let html = Array(repeating: line, count: 40).joined(separator: "\n")
+    let nsHTML = html as NSString
+
+    let thirdLineStart = (line.utf16.count + 1) * 2
+    let requestedRange = NSRange(location: thirdLineStart + 4, length: 3)
+    let normalized = HTMLHighlightPlanBuilder.normalizedRange(
+        for: html,
+        requestedRange: requestedRange
+    )
+
+    #expect(normalized.location == 0 || nsHTML.character(at: normalized.location - 1) == 10)
+    #expect(NSMaxRange(normalized) == nsHTML.length || nsHTML.character(at: NSMaxRange(normalized) - 1) == 10)
+    #expect(normalized.location <= requestedRange.location)
+    #expect(NSMaxRange(normalized) >= NSMaxRange(requestedRange))
+}
