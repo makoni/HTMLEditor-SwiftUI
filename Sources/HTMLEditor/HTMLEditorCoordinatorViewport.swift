@@ -101,12 +101,6 @@ extension HTMLEditor.Coordinator {
         let needsHighlighting = rangeNeedsHighlighting(visibleRange, text: textNSString, forceHighlight: forceHighlight)
 
         if needsHighlighting {
-            // Cancel before the cache lookup, not just on the miss path.  A task
-            // started for an earlier viewport otherwise survives a cache hit,
-            // resumes with documentVersion unchanged, and repaints the current
-            // viewport with spans belonging to a region that has scrolled away.
-            visibleHighlightTask?.cancel()
-
             let budget = HTMLEditor.highlightBudget(forTextLength: textStorage.length)
             let expandedRange = expandedHighlightRange(
                 for: visibleRange,
@@ -155,43 +149,29 @@ extension HTMLEditor.Coordinator {
                 return
             }
 
-            visibleHighlightTask = Task { [weak self, weak textView] in
-                guard let self else { return }
-                let plan = await self.planner.rangePlan(
-                    for: textSnapshot,
-                    requestedRange: expandedRange
+            let plan = planner.rangePlan(for: textSnapshot, requestedRange: expandedRange)
+            storeCachedPlan(plan, version: currentVersion, textLength: textLength)
+            let displayPlan = HTMLSyntaxHighlighter.filteredPlan(plan, detail: detail)
+            if !preserveExistingOverlay {
+                performVisibleRangeHighlighting(
+                    plan: displayPlan,
+                    theme: currentTheme,
+                    textStorage: textStorage,
+                    replacesVisibleOverlay: true
                 )
-                guard !Task.isCancelled else { return }
-
-                await MainActor.run {
-                    guard let textView,
-                          let currentTextStorage = textView.textStorage,
-                          self.documentVersion == currentVersion,
-                          currentTextStorage.length == textLength else { return }
-                    self.storeCachedPlan(plan, version: currentVersion, textLength: textLength)
-                    let displayPlan = HTMLSyntaxHighlighter.filteredPlan(plan, detail: detail)
-                    if !preserveExistingOverlay {
-                        self.performVisibleRangeHighlighting(
-                            plan: displayPlan,
-                            theme: currentTheme,
-                            textStorage: currentTextStorage,
-                            replacesVisibleOverlay: true
-                        )
-                        self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
-                    }
-                    // Allow prewarm regardless of forceHighlight (see comment above).
-                    if allowPrewarm && budget.prewarmEnabled {
-                        self.scheduleViewportPrewarm(
-                            around: visibleRange,
-                            direction: scrollDirection,
-                            textSnapshot: textSnapshot,
-                            theme: currentTheme,
-                            version: currentVersion,
-                            textLength: textLength,
-                            textView: textView
-                        )
-                    }
-                }
+                recordHighlightedRange(plan.coveredRange, text: textNSString)
+            }
+            // Allow prewarm regardless of forceHighlight (see comment above).
+            if allowPrewarm && budget.prewarmEnabled {
+                scheduleViewportPrewarm(
+                    around: visibleRange,
+                    direction: scrollDirection,
+                    textSnapshot: textSnapshot,
+                    theme: currentTheme,
+                    version: currentVersion,
+                    textLength: textLength,
+                    textView: textView
+                )
             }
         }
     }
@@ -199,7 +179,6 @@ extension HTMLEditor.Coordinator {
     @MainActor
     func scheduleScrollIdleHighlighting(textView: NSTextView, scrollView: NSScrollView) {
         visibleHighlightDebounceTask?.cancel()
-        visibleHighlightTask?.cancel()
         prewarmTask?.cancel()
         scrollIdleTask?.cancel()
 
@@ -374,28 +353,24 @@ extension HTMLEditor.Coordinator {
             }
 
             for candidate in candidates {
-                guard !Task.isCancelled else { return }
-                let plan = await self.planner.rangePlan(
-                    for: textSnapshot,
-                    requestedRange: candidate
-                )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      let textView,
+                      let currentTextStorage = textView.textStorage,
+                      self.documentVersion == version,
+                      currentTextStorage.length == textLength else { return }
 
-                await MainActor.run {
-                    guard let textView,
-                          let currentTextStorage = textView.textStorage,
-                          self.documentVersion == version,
-                          currentTextStorage.length == textLength,
-                          self.rangeNeedsHighlighting(plan.coveredRange, text: currentTextStorage.string as NSString) else { return }
-                    self.storeCachedPlan(plan, version: version, textLength: textLength)
-                    self.performVisibleRangeHighlighting(
-                        plan: plan,
-                        theme: theme,
-                        textStorage: currentTextStorage,
-                        replacesVisibleOverlay: false
-                    )
-                    self.recordHighlightedRange(plan.coveredRange, text: currentTextStorage.string as NSString)
-                }
+                let plan = self.planner.rangePlan(for: textSnapshot, requestedRange: candidate)
+                let currentText = currentTextStorage.string as NSString
+                guard self.rangeNeedsHighlighting(plan.coveredRange, text: currentText) else { continue }
+
+                self.storeCachedPlan(plan, version: version, textLength: textLength)
+                self.performVisibleRangeHighlighting(
+                    plan: plan,
+                    theme: theme,
+                    textStorage: currentTextStorage,
+                    replacesVisibleOverlay: false
+                )
+                self.recordHighlightedRange(plan.coveredRange, text: currentText)
             }
         }
     }

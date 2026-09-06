@@ -19,7 +19,22 @@ struct HTMLHighlightChunkResult: Sendable {
     let spans: [HTMLSyntaxHighlighter.HighlightSpan]
 }
 
-/// Owned by a single `HTMLEditor.Coordinator`.
+/// Owned by a single `HTMLEditor.Coordinator`, and used from the main actor.
+///
+/// It is not an actor, and the scanning it drives does not run in the
+/// background. Two measurements decided that. Building a viewport plan costs
+/// single-digit microseconds — `normalizedRange` clamps the request to 2 000
+/// units and `fullPlan` is gated at `maxHighlightLength`, so there is no
+/// unbounded scan — while an actor hop alone costs about 5.7 µs, roughly half
+/// the cost of a cache hit. There was nothing to overlap.
+///
+/// Handing the work off was also unsound: the `String` a live `NSTextStorage`
+/// returns bridges back to the storage's own mutable `NSString`, so a
+/// background scan read the document while the user kept typing into it.
+/// Staying on the main actor removes that by construction, and removes the
+/// unordered relationship between fire-and-forget invalidation tasks and the
+/// plan requests that followed them.
+///
 ///
 /// This used to be one process-wide instance keyed by a document UUID, which
 /// meant two editors on screen shared one cache and evicted each other's chunks
@@ -27,7 +42,8 @@ struct HTMLHighlightChunkResult: Sendable {
 /// holding the ID never cleared its own entries on teardown. One planner per
 /// coordinator makes the caps per-document, deletes the filtering, and hands
 /// lifetime to ARC.
-actor HTMLHighlightPlanner {
+@MainActor
+final class HTMLHighlightPlanner {
     private enum ChunkDependencyKind: Sendable {
         case contextDependent
         case contextIndependent

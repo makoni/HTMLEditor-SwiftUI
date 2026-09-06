@@ -131,10 +131,8 @@ public struct HTMLEditor: NSViewRepresentable {
         var isUpdatingFromHighlighting = false
         var previousText = ""
         var visibleHighlightDebounceTask: Task<Void, Never>?
-        var visibleHighlightTask: Task<Void, Never>?
         var scrollIdleTask: Task<Void, Never>?
         var prewarmTask: Task<Void, Never>?
-        var fullHighlightTask: Task<Void, Never>?
         var bindingSyncTask: Task<Void, Never>?
         var detailRecoveryTask: Task<Void, Never>?
         var editBurstTask: Task<Void, Never>?
@@ -197,7 +195,6 @@ public struct HTMLEditor: NSViewRepresentable {
             updateLayoutPolicy(textView: textView, textLength: newLength)
             cachedFullHighlightPlan = nil
             cachedFullHighlightVersion = nil
-            fullHighlightTask?.cancel()
             prewarmTask?.cancel()
             detailRecoveryTask?.cancel()
 
@@ -242,20 +239,21 @@ public struct HTMLEditor: NSViewRepresentable {
             // the planner's remapping was built for.
             if let pendingEdit, magnitude == .incremental || magnitude == .medium {
                 invalidateCaches(for: pendingEdit, newTextLength: newLength)
-                Task { [planner] in
-                    await planner.invalidate(
-                        editRange: pendingEdit.affectedRange,
-                        replacementUTF16Length: pendingEdit.replacementUTF16Length,
-                        newTextLength: newLength
-                    )
-                }
+                // Synchronous, so the invalidation is ordered before the plan
+                // requests the repaint schedules moments later.  As two
+                // unstructured tasks these had no ordering guarantee at all;
+                // correctness rested on a debounce being longer than an actor
+                // hop.
+                planner.invalidate(
+                    editRange: pendingEdit.affectedRange,
+                    replacementUTF16Length: pendingEdit.replacementUTF16Length,
+                    newTextLength: newLength
+                )
                 self.pendingEdit = nil
             } else {
                 cachedRangePlans.removeAll()
                 lastVisibleRange = NSRange(location: 0, length: 0)
-                Task { [planner] in
-                    await planner.clear()
-                }
+                planner.clear()
                 self.pendingEdit = nil
             }
 
@@ -284,10 +282,8 @@ public struct HTMLEditor: NSViewRepresentable {
 
         deinit {
             visibleHighlightDebounceTask?.cancel()
-            visibleHighlightTask?.cancel()
             scrollIdleTask?.cancel()
             prewarmTask?.cancel()
-            fullHighlightTask?.cancel()
             bindingSyncTask?.cancel()
             detailRecoveryTask?.cancel()
             editBurstTask?.cancel()

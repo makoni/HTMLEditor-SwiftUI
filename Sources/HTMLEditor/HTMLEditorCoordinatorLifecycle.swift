@@ -30,11 +30,8 @@ extension HTMLEditor.Coordinator {
         cachedFullHighlightVersion = nil
         cachedRangePlans.removeAll()
         visibleHighlightState.clear()
-        visibleHighlightTask?.cancel()
         prewarmTask?.cancel()
-        Task { [planner] in
-            await planner.clear()
-        }
+        planner.clear()
         performFullHighlighting(html: html, theme: theme, textView: textView)
     }
 
@@ -114,7 +111,6 @@ extension HTMLEditor.Coordinator {
         guard let scrollView = textView.enclosingScrollView else { return }
 
         let currentVersion = documentVersion
-        fullHighlightTask?.cancel()
 
         if html.utf16.count > HTMLSyntaxHighlighter.maxHighlightLength {
             cachedFullHighlightPlan = nil
@@ -137,20 +133,14 @@ extension HTMLEditor.Coordinator {
             return
         }
 
-        fullHighlightTask = Task { [weak self, weak textView, weak scrollView] in
-            guard let self else { return }
-            let plan = await self.planner.fullPlan(for: html)
-            guard !Task.isCancelled else { return }
-
-            await MainActor.run {
-                guard let textView,
-                      let scrollView,
-                      self.documentVersion == currentVersion else { return }
-                self.cachedFullHighlightPlan = plan
-                self.cachedFullHighlightVersion = currentVersion
-                self.applyFullHighlightPlan(plan, html: html, theme: theme, to: textView, in: scrollView)
-            }
-        }
+        let plan = planner.fullPlan(for: html)
+        // Nothing suspends between capturing the version and this check any
+        // more, but the guard is kept so a future re-introduction of async work
+        // here cannot silently apply a stale plan.
+        guard documentVersion == currentVersion else { return }
+        cachedFullHighlightPlan = plan
+        cachedFullHighlightVersion = currentVersion
+        applyFullHighlightPlan(plan, html: html, theme: theme, to: textView, in: scrollView)
     }
 
     @MainActor
