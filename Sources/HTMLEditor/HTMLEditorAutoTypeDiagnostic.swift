@@ -18,7 +18,9 @@ import AppKit
 /// small spans and becomes one enormous attribute value — and TextKit has to
 /// restyle and re-lay out all of it.
 ///
-/// Delete once the TextKit question is settled.
+/// Kept because it earned its place: every wrong turn in the typing-latency
+/// investigation came from measuring something narrower than a keystroke, and
+/// this drives the real one. It costs nothing unless the variable is set.
 enum HTMLEditorAutoTypeDiagnostic {
     @MainActor
     static func startIfRequested(textView: NSTextView, scrollView: NSScrollView) {
