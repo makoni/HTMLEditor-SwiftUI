@@ -22,11 +22,25 @@ enum HTMLEditorDocumentSize {
     static let editInvalidationRadius = 256
 }
 
-enum HTMLEditorRefreshStrategy {
+/// How big the edit was.  Deliberately independent of document size: the two
+/// used to be folded into one enum whose document-size check came first, so any
+/// document over the viewport-first threshold reported `.largeDocument` no
+/// matter how small the edit.  That made the incremental path unreachable for
+/// exactly the documents the incremental machinery exists for — every keystroke
+/// dropped the whole planner cache — and left a dead sub-expression in
+/// `highlightDetail`, which could then only ever return `.tagsOnly` while typing
+/// in a conservative-regime document.
+enum HTMLEditorEditMagnitude {
     case incremental
-    case mediumChange
-    case majorChange
-    case largeDocument
+    case medium
+    case major
+}
+
+/// Which runtime regime the document's size puts the editor in.
+enum HTMLEditorSizeRegime {
+    case full
+    case viewportFirst
+    case conservative
 }
 
 enum HTMLEditorHighlightTrigger {
@@ -49,28 +63,35 @@ struct HTMLEditorHighlightBudget {
 }
 
 extension HTMLEditor {
-    nonisolated static func refreshStrategy(
+    nonisolated static func editMagnitude(
         oldLength: Int,
         newLength: Int,
         editRangeLength: Int,
         replacementLength: Int
-    ) -> HTMLEditorRefreshStrategy {
-        if max(oldLength, newLength) > HTMLEditorDocumentSize.viewportFirst {
-            return .largeDocument
-        }
-
+    ) -> HTMLEditorEditMagnitude {
         let lengthDelta = abs(newLength - oldLength)
-        let editMagnitude = max(lengthDelta, max(editRangeLength, replacementLength))
+        let magnitude = max(lengthDelta, max(editRangeLength, replacementLength))
 
-        if oldLength == 0 || editMagnitude > 2_000 {
-            return .majorChange
+        // An empty starting document means the whole content just arrived.
+        if oldLength == 0 || magnitude > 2_000 {
+            return .major
         }
 
-        if editMagnitude > 200 {
-            return .mediumChange
+        if magnitude > 200 {
+            return .medium
         }
 
         return .incremental
+    }
+
+    nonisolated static func sizeRegime(forTextLength textLength: Int) -> HTMLEditorSizeRegime {
+        if textLength > HTMLEditorDocumentSize.conservative {
+            return .conservative
+        }
+        if textLength > HTMLEditorDocumentSize.viewportFirst {
+            return .viewportFirst
+        }
+        return .full
     }
 
     nonisolated static func highlightBudget(forTextLength textLength: Int) -> HTMLEditorHighlightBudget {
@@ -135,13 +156,20 @@ extension HTMLEditor {
         }
     }
 
+    /// Typing a single character in a huge document now keeps full detail, which
+    /// is what this rule always said and never did: `strategy` could not be
+    /// `.incremental` above the conservative threshold, so the size test alone
+    /// decided the result.  Bulk edits there still drop to tags-only and recover
+    /// through the delayed full-detail pass.
     nonisolated static func highlightDetail(
         forTextLength textLength: Int,
-        strategy: HTMLEditorRefreshStrategy,
+        magnitude: HTMLEditorEditMagnitude,
         trigger: HTMLEditorHighlightTrigger
     ) -> HTMLEditorHighlightDetail {
         guard trigger == .edit else { return .full }
-        return textLength > HTMLEditorDocumentSize.conservative && strategy != .incremental ? .tagsOnly : .full
+        return sizeRegime(forTextLength: textLength) == .conservative && magnitude != .incremental
+            ? .tagsOnly
+            : .full
     }
 
     nonisolated static func shouldPreserveVisibleHighlight(

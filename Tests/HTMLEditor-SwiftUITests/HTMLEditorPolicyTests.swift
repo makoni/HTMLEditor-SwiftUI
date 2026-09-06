@@ -2,44 +2,85 @@ import Testing
 import Foundation
 @testable import HTMLEditor
 
-@Test func testRefreshStrategyClassifiesSmallEditAsIncremental() async throws {
-    let strategy = HTMLEditor.refreshStrategy(
+@Test func testEditMagnitudeClassifiesSmallEditAsIncremental() async throws {
+    let magnitude = HTMLEditor.editMagnitude(
         oldLength: 1_000,
         newLength: 1_001,
         editRangeLength: 1,
         replacementLength: 2
     )
-    #expect(strategy == .incremental)
+    #expect(magnitude == .incremental)
 }
 
-@Test func testRefreshStrategyClassifiesMediumPaste() async throws {
-    let strategy = HTMLEditor.refreshStrategy(
+@Test func testEditMagnitudeClassifiesMediumPaste() async throws {
+    let magnitude = HTMLEditor.editMagnitude(
         oldLength: 4_000,
         newLength: 4_320,
         editRangeLength: 0,
         replacementLength: 320
     )
-    #expect(strategy == .mediumChange)
+    #expect(magnitude == .medium)
 }
 
-@Test func testRefreshStrategyClassifiesMajorPaste() async throws {
-    let strategy = HTMLEditor.refreshStrategy(
+@Test func testEditMagnitudeClassifiesMajorPaste() async throws {
+    let magnitude = HTMLEditor.editMagnitude(
         oldLength: 4_000,
         newLength: 6_500,
         editRangeLength: 0,
         replacementLength: 2_500
     )
-    #expect(strategy == .majorChange)
+    #expect(magnitude == .major)
 }
 
-@Test func testRefreshStrategyClassifiesLargeDocument() async throws {
-    let strategy = HTMLEditor.refreshStrategy(
-        oldLength: 60_000,
-        newLength: 60_010,
-        editRangeLength: 5,
-        replacementLength: 15
+@Test func testEditMagnitudeIgnoresDocumentSize() async throws {
+    // The whole point of splitting the axes: a keystroke stays incremental no
+    // matter how big the document is.  This used to report .largeDocument, which
+    // dropped the entire planner cache on every character typed and pinned
+    // highlightDetail to tags-only.
+    let keystrokeInHugeDocument = HTMLEditor.editMagnitude(
+        oldLength: 2_000_000,
+        newLength: 2_000_001,
+        editRangeLength: 0,
+        replacementLength: 1
     )
-    #expect(strategy == .largeDocument)
+    #expect(keystrokeInHugeDocument == .incremental)
+
+    let keystrokeInSmallDocument = HTMLEditor.editMagnitude(
+        oldLength: 200,
+        newLength: 201,
+        editRangeLength: 0,
+        replacementLength: 1
+    )
+    #expect(keystrokeInSmallDocument == keystrokeInHugeDocument)
+
+    // A bulk edit is still major, again regardless of document size.
+    #expect(
+        HTMLEditor.editMagnitude(
+            oldLength: 2_000_000,
+            newLength: 2_010_000,
+            editRangeLength: 0,
+            replacementLength: 10_000
+        ) == .major
+    )
+}
+
+@Test func testSizeRegimeTracksTheDocumentThresholds() async throws {
+    #expect(HTMLEditor.sizeRegime(forTextLength: 10_000) == .full)
+    #expect(HTMLEditor.sizeRegime(forTextLength: HTMLEditorDocumentSize.viewportFirst) == .full)
+    #expect(HTMLEditor.sizeRegime(forTextLength: HTMLEditorDocumentSize.viewportFirst + 1) == .viewportFirst)
+    #expect(HTMLEditor.sizeRegime(forTextLength: HTMLEditorDocumentSize.conservative) == .viewportFirst)
+    #expect(HTMLEditor.sizeRegime(forTextLength: HTMLEditorDocumentSize.conservative + 1) == .conservative)
+}
+
+@Test func testKeystrokeInHugeDocumentKeepsFullDetail() async throws {
+    // Previously unreachable: above the conservative threshold every edit was
+    // classified .largeDocument, so this always came back .tagsOnly.
+    let detail = HTMLEditor.highlightDetail(
+        forTextLength: 2_000_000,
+        magnitude: .incremental,
+        trigger: .edit
+    )
+    #expect(detail == .full)
 }
 
 @Test func testHighlightBudgetTightensForLargeDocuments() async throws {
@@ -77,7 +118,7 @@ import Foundation
 @Test func testHugeDocumentEditUsesTagsOnlyDetail() async throws {
     let detail = HTMLEditor.highlightDetail(
         forTextLength: 180_000,
-        strategy: .largeDocument,
+        magnitude: .major,
         trigger: .edit
     )
     #expect(detail == .tagsOnly)
@@ -87,14 +128,14 @@ import Foundation
     #expect(
         HTMLEditor.highlightDetail(
             forTextLength: 180_000,
-            strategy: .largeDocument,
+            magnitude: .major,
             trigger: .scroll
         ) == .full
     )
     #expect(
         HTMLEditor.highlightDetail(
             forTextLength: 180_000,
-            strategy: .largeDocument,
+            magnitude: .major,
             trigger: .recovery
         ) == .full
     )

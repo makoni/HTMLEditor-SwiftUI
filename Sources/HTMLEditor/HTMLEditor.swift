@@ -181,7 +181,7 @@ public struct HTMLEditor: NSViewRepresentable {
             let newText = textView.string
             let oldLength = previousText.utf16.count
             let newLength = newText.utf16.count
-            let strategy = HTMLEditor.refreshStrategy(
+            let magnitude = HTMLEditor.editMagnitude(
                 oldLength: oldLength,
                 newLength: newLength,
                 editRangeLength: pendingEdit?.affectedRange.length ?? 0,
@@ -233,7 +233,10 @@ public struct HTMLEditor: NSViewRepresentable {
                 )
             }
 
-            if let pendingEdit, strategy == .incremental || strategy == .mediumChange {
+            // Gated on how big the edit was, not how big the document is: a
+            // one-character change in a multi-megabyte file is exactly the case
+            // the planner's remapping was built for.
+            if let pendingEdit, magnitude == .incremental || magnitude == .medium {
                 invalidateCaches(for: pendingEdit, newTextLength: newLength)
                 Task {
                     await HTMLSyntaxHighlighter.invalidatePlannerCache(
@@ -258,10 +261,10 @@ public struct HTMLEditor: NSViewRepresentable {
             guard let scrollView = textView.enclosingScrollView else { return }
             let detail = HTMLEditor.highlightDetail(
                 forTextLength: newLength,
-                strategy: strategy,
+                magnitude: magnitude,
                 trigger: .edit
             )
-            let allowPrewarm = strategy == .incremental
+            let allowPrewarm = magnitude == .incremental
             scheduleVisibleRangeHighlighting(
                 textView: textView,
                 scrollView: scrollView,
