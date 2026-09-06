@@ -273,6 +273,37 @@ extension HTMLEditor.Coordinator {
         isUpdatingFromHighlighting = false
     }
 
+    /// Paints `plan` while recording `visiblePlan` as the state of the viewport.
+    ///
+    /// For a full pass those are the same value.  For a repaint around the caret
+    /// they are not: the painted range is the few hundred units that actually
+    /// changed, while the tracked plan still describes the whole viewport.
+    /// Everything outside the painted range keeps the temporary attributes it
+    /// already has — the layout manager shifts those across an edit — so
+    /// repainting the viewport for a single character is redundant work, and it
+    /// is not cheap: `addTemporaryAttributes` invalidates display, which is
+    /// where most of the coordinator's main-thread time per keystroke went.
+    @MainActor
+    func applyHighlight(
+        _ plan: HTMLSyntaxHighlighter.HighlightPlan,
+        recordingVisiblePlan visiblePlan: HTMLSyntaxHighlighter.HighlightPlan,
+        theme: HTMLEditorColorScheme,
+        textStorage: NSTextStorage
+    ) {
+        isUpdatingFromHighlighting = true
+        defer { isUpdatingFromHighlighting = false }
+
+        if let layoutManager = textStorage.layoutManagers.first {
+            HTMLSyntaxHighlighter.applyTemporary(plan: plan, to: layoutManager, theme: theme)
+        } else {
+            textStorage.beginEditing()
+            HTMLSyntaxHighlighter.apply(plan: plan, to: textStorage, theme: theme)
+            textStorage.endEditing()
+        }
+
+        visibleHighlightState.storeOverlayPlan(visiblePlan)
+    }
+
     @MainActor
     func recordHighlightedRange(_ range: NSRange, text: NSString) {
         highlightCoverage.markHighlighted(HTMLEditor.alignedHighlightRange(range, in: text))

@@ -98,18 +98,21 @@ extension HTMLEditor.Coordinator {
             requestedRange: localRange
         )
         let clippedLocalPlan = HTMLSyntaxHighlighter.clippedPlan(localPlan, to: localRange)
-        let previousVisiblePlan = visibleHighlightState.plan
-        let mergedPlan = previousVisiblePlan.map {
+        let mergedPlan = visibleHighlightState.plan.map {
             HTMLSyntaxHighlighter.mergedPlan(base: $0, overlay: clippedLocalPlan)
         } ?? clippedLocalPlan
 
-        performVisibleRangeHighlighting(
-            plan: mergedPlan,
+        // Paint the changed region only.  The merged plan is what the viewport
+        // should look like and is recorded as such, but the parts of it away
+        // from the caret are already on screen and correct: the remap and the
+        // layout manager shift existing spans by the same delta, and anything
+        // the edit could have made structurally wrong lies inside the dirty
+        // range, which is what `localRange` covers.
+        applyHighlight(
+            clippedLocalPlan,
+            recordingVisiblePlan: mergedPlan,
             theme: parent.theme.current(for: NSApp.effectiveAppearance),
-            textStorage: textStorage,
-            replacesVisibleOverlay: true,
-            clearsDirtyRange: false,
-            previousVisiblePlan: previousVisiblePlan
+            textStorage: textStorage
         )
     }
 }
