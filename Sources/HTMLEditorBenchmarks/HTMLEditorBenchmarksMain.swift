@@ -11,6 +11,7 @@ struct HTMLEditorBenchmarks {
         let sample = String(html.prefix(45_000))
 
         print("document: \(html.utf16.count) UTF-16 units, sample: \(sample.utf16.count)")
+        print("longest line: \(longestLineLength(html)) units")
 
         let samples = await HTMLEditorBenchmarkSupport.runDefaultBenchmarks(
             sampleHTML: sample,
@@ -43,11 +44,30 @@ struct HTMLEditorBenchmarks {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Size of the generated document, in UTF-16 units.
+    ///
+    /// The default clears the conservative threshold so all three regimes are
+    /// covered without an external file. `HTML_EDITOR_BENCHMARK_LENGTH` raises
+    /// it — 13_000_000 approximates a full saved web page — at the cost of a
+    /// much slower run.
     private static func syntheticBenchmarkHTML() -> String {
-        let row = #"<div class="row" data-id="123"><a href="https://example.com/item">plain text</a><span>value</span></div>"#
-        // Large enough to reach the >150_000 conservative regime, so the suite
-        // covers all three size regimes without an external file.
-        return String(repeating: row + "\n", count: 10_000)
+        let requested = ProcessInfo.processInfo.environment["HTML_EDITOR_BENCHMARK_LENGTH"]
+            .flatMap(Int.init)
+        return BenchmarkDocument.make(targetUTF16Length: requested ?? 1_000_000)
+    }
+
+    private static func longestLineLength(_ html: String) -> Int {
+        var longest = 0
+        var current = 0
+        for unit in html.utf16 {
+            if unit == 10 {
+                longest = max(longest, current)
+                current = 0
+            } else {
+                current += 1
+            }
+        }
+        return max(longest, current)
     }
 
     private static func format(_ value: Double) -> String {
