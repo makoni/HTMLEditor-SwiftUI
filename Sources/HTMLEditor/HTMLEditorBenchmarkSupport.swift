@@ -43,7 +43,8 @@ public enum HTMLEditorBenchmarkSupport {
             // Opt-in: it hosts a window and drives the real edit path, which is
             // slower and needs a usable AppKit session.
             if ProcessInfo.processInfo.environment["HTML_EDITOR_BENCHMARK_KEYSTROKE"] != nil {
-                mainActorResults += benchmarkKeystrokePath(largeHTML)
+                mainActorResults += benchmarkKeystrokePath(largeHTML, caret: .midDocument)
+                mainActorResults += benchmarkKeystrokePath(largeHTML, caret: .longestLine)
             }
             return mainActorResults
         }
@@ -317,8 +318,21 @@ public enum HTMLEditorBenchmarkSupport {
     /// were all cheap while typing in a large document was not: putting the view
     /// in a window made the coordinator's synchronous work an order of magnitude
     /// more expensive, which no isolated benchmark could show.
+    /// Where to put the caret before typing.  Position matters more than
+    /// anything the editor does: a word-wrapping text view has to re-wrap the
+    /// whole line on every keystroke, so a caret inside a very long line — which
+    /// minified HTML is made of — costs several times what one in ordinary
+    /// markup does, and that difference dwarfs the coordinator's own work.
+    private enum KeystrokeCaret: String {
+        case midDocument = "mid"
+        case longestLine = "long-line"
+    }
+
     @MainActor
-    private static func benchmarkKeystrokePath(_ html: String) -> [HTMLEditorBenchmarkResult] {
+    private static func benchmarkKeystrokePath(
+        _ html: String,
+        caret: KeystrokeCaret
+    ) -> [HTMLEditorBenchmarkResult] {
         let theme = HTMLEditorColorScheme(
             foreground: .black, background: .white, tag: .red,
             attributeName: .blue, attributeValue: .green,
@@ -352,7 +366,13 @@ public enum HTMLEditorBenchmarkSupport {
         textView.delegate = coordinator
         coordinator.previousText = html
 
-        let caretStart = html.utf16.count / 2
+        let caretStart: Int
+        switch caret {
+        case .midDocument:
+            caretStart = html.utf16.count / 2
+        case .longestLine:
+            caretStart = middleOfLongestLine(in: html as NSString)
+        }
         textView.setSelectedRange(NSRange(location: caretStart, length: 0))
         textView.scrollRangeToVisible(NSRange(location: caretStart, length: 0))
 
@@ -395,10 +415,31 @@ public enum HTMLEditorBenchmarkSupport {
         }
 
         return [
-            result(label: "bench-keystroke-appkit-insert", samples: insertSamples),
-            result(label: "bench-keystroke-coordinator", samples: coordinatorSamples),
-            result(label: "bench-keystroke-layout-and-draw", samples: drawSamples)
+            result(label: "bench-keystroke-appkit-insert-\(caret.rawValue)", samples: insertSamples),
+            result(label: "bench-keystroke-coordinator-\(caret.rawValue)", samples: coordinatorSamples),
+            result(label: "bench-keystroke-layout-and-draw-\(caret.rawValue)", samples: drawSamples)
         ]
+    }
+
+    private static func middleOfLongestLine(in text: NSString) -> Int {
+        var longestStart = 0
+        var longestLength = 0
+        var lineStart = 0
+
+        for index in 0..<text.length where text.character(at: index) == 10 {
+            if index - lineStart > longestLength {
+                longestLength = index - lineStart
+                longestStart = lineStart
+            }
+            lineStart = index + 1
+        }
+
+        if text.length - lineStart > longestLength {
+            longestLength = text.length - lineStart
+            longestStart = lineStart
+        }
+
+        return longestStart + longestLength / 2
     }
 
     private static func measure(
