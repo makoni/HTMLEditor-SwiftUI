@@ -53,13 +53,48 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
     let normalised = "<p>  tabbed</p>"
 
     let coordinator = makeCoordinator(displaying: typed)
-    coordinator.awaitingLocalBindingEcho = true
+    coordinator.lastBindingWriteHTML = typed
     #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: normalised) == true)
 
     // The plain echo of an unmodified write is still ignored.
     let plain = makeCoordinator(displaying: typed)
-    plain.awaitingLocalBindingEcho = true
+    plain.lastBindingWriteHTML = typed
     #expect(plain.shouldApplyExternalUpdate(incomingHTML: typed) == false)
+}
+
+@MainActor
+@Test func testEchoArrivingAfterMoreTypingDoesNotResetTheDocument() throws {
+    // For large documents bindingSyncDelay holds the write back, so the binding
+    // is routinely behind what is on screen.  A keystroke landing between the
+    // write and SwiftUI's update turn means the echo carries older text than the
+    // text view holds; applying it reassigns textView.string, which reflows the
+    // whole document and drops the caret.
+    let sentToBinding = "<p>ab</p>"
+    let typedSince = "<p>abc</p>"
+
+    let coordinator = makeCoordinator(displaying: typedSince)
+    coordinator.lastBindingWriteHTML = sentToBinding
+
+    #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: sentToBinding) == false)
+
+    // A genuinely new value from the parent is still applied.
+    #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: "<p>zzz</p>") == true)
+}
+
+@MainActor
+@Test func testEchoGuardIsReleasedOnceTheBindingCatchesUp() throws {
+    // Once the echo of the latest write arrives with the text view in step, the
+    // guard must be dropped — otherwise a parent that later sets that same value
+    // again (an undo, say) would be ignored forever.
+    let html = "<p>ab</p>"
+    let coordinator = makeCoordinator(displaying: html)
+    coordinator.lastBindingWriteHTML = html
+
+    #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: html) == false)
+    #expect(coordinator.lastBindingWriteHTML == nil)
+
+    coordinator.previousText = "<p>edited</p>"
+    #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: html) == true)
 }
 
 @MainActor

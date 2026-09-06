@@ -141,7 +141,9 @@ public struct HTMLEditor: NSViewRepresentable {
         var documentVersion: Int = 0
         let plannerDocumentID = UUID()
         var pendingLocalBindingSyncHTML: String?
-        var awaitingLocalBindingEcho = false
+        /// The exact string most recently written through the binding, kept so
+        /// its echo can be recognised even after the text view has moved on.
+        var lastBindingWriteHTML: String?
         var pendingEdit: PendingEdit?
         var cachedFullHighlightPlan: HTMLSyntaxHighlighter.HighlightPlan?
         var cachedFullHighlightVersion: Int?

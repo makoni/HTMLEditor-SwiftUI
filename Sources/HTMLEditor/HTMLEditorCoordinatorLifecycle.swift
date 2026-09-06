@@ -22,7 +22,7 @@ extension HTMLEditor.Coordinator {
         updateLayoutPolicy(textView: textView, textLength: html.utf16.count)
         previousText = html
         pendingLocalBindingSyncHTML = nil
-        awaitingLocalBindingEcho = false
+        lastBindingWriteHTML = nil
         documentVersion &+= 1
         lastVisibleRange = NSRange(location: 0, length: 0)
         highlightCoverage.clear()
@@ -40,21 +40,33 @@ extension HTMLEditor.Coordinator {
 
     @MainActor
     func shouldApplyExternalUpdate(incomingHTML: String) -> Bool {
-        // `previousText` is what the text view is showing, so an exact match is
-        // either the echo of our own binding write or a genuine no-op.  Either
-        // way there is nothing to apply.
+        // `previousText` is what the text view is showing, so an exact match has
+        // nothing to apply.  Comparing the text itself matters: this was once a
+        // four-sample fingerprint, which is fine as a cache key but not as
+        // document equality — any same-length change that missed the sampled
+        // offsets, such as a find-and-replace or an equal-length rename, read as
+        // "no change" and was silently dropped.
+        if incomingHTML == previousText {
+            lastBindingWriteHTML = nil
+            return false
+        }
+
+        // Our own write coming back after the text view has moved on.  For large
+        // documents the binding is deliberately behind — bindingSyncDelay defers
+        // the write — so a keystroke landing in that window is routine, not an
+        // edge case.  Applying it would reset the document to an older state,
+        // reflowing the whole text view and dropping the selection.
         //
-        // This used to compare a four-sample fingerprint instead, which is fine
-        // as a cache key but not as document equality: any same-length change
-        // that missed the sampled offsets — a find-and-replace, an equal-length
-        // tag or attribute rename — read as "no change" and was dropped.
-        //
-        // The echo flag is only consulted for that exact match.  Consuming it
-        // unconditionally swallowed updates from a parent that normalises in its
-        // setter, since the value coming back then differs from what was sent.
-        let isEcho = incomingHTML == previousText
-        awaitingLocalBindingEcho = false
-        return !isEcho
+        // Matching the written string rather than a "waiting for echo" flag is
+        // what keeps this from also swallowing a parent that normalises in its
+        // setter: a normalised value differs from what was sent, so it still
+        // gets applied.
+        if let lastBindingWriteHTML, incomingHTML == lastBindingWriteHTML {
+            return false
+        }
+
+        lastBindingWriteHTML = nil
+        return true
     }
 
     @MainActor
@@ -64,7 +76,7 @@ extension HTMLEditor.Coordinator {
 
         guard let delay = HTMLEditor.bindingSyncDelay(forTextLength: html.utf16.count) else {
             pendingLocalBindingSyncHTML = nil
-            awaitingLocalBindingEcho = true
+            lastBindingWriteHTML = html
             parent.html = html
             return
         }
@@ -81,7 +93,7 @@ extension HTMLEditor.Coordinator {
                   self.documentVersion == scheduledVersion,
                   self.pendingLocalBindingSyncHTML != nil else { return }
             self.pendingLocalBindingSyncHTML = nil
-            self.awaitingLocalBindingEcho = true
+            self.lastBindingWriteHTML = html
             self.parent.html = html
         }
     }
@@ -93,7 +105,7 @@ extension HTMLEditor.Coordinator {
 
         guard let pendingLocalBindingSyncHTML else { return }
         self.pendingLocalBindingSyncHTML = nil
-        awaitingLocalBindingEcho = true
+        lastBindingWriteHTML = pendingLocalBindingSyncHTML
         parent.html = pendingLocalBindingSyncHTML
     }
 
