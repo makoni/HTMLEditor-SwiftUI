@@ -171,7 +171,7 @@ public enum HTMLEditorBenchmarkSupport {
                     for: NSRange(location: editLocation, length: 0),
                     replacementLength: replacement.utf16.count,
                     newTextLength: updatedHTML.utf16.count,
-                    expansion: HTMLEditor.highlightBudget(forTextLength: updatedHTML.utf16.count).visibleExpansion
+                    expansion: HTMLEditorPolicy.highlightBudget(forTextLength: updatedHTML.utf16.count).visibleExpansion
                 )
             )
         }
@@ -252,16 +252,16 @@ public enum HTMLEditorBenchmarkSupport {
     private static func benchmarkKeystrokeLocalPass(_ html: String, label: String) async -> HTMLEditorBenchmarkResult {
         let textLength = html.utf16.count
         let editRange = NSRange(location: max(0, textLength / 2), length: 0)
-        let dirtyRange = HTMLEditor.structuralDirtyRange(
+        let dirtyRange = HTMLEditorPolicy.structuralDirtyRange(
             for: editRange,
             replacementLength: 1,
             in: html as NSString,
-            expansion: HTMLEditor.highlightBudget(forTextLength: textLength).visibleExpansion
+            expansion: HTMLEditorPolicy.highlightBudget(forTextLength: textLength).visibleExpansion
         )
-        let localRange = HTMLEditor.localDirtyHighlightRange(
+        let localRange = HTMLEditorPolicy.localDirtyHighlightRange(
             around: dirtyRange,
             textLength: textLength,
-            maxLength: HTMLEditor.immediateEditHighlightLimit(forTextLength: textLength)
+            maxLength: HTMLEditorPolicy.immediateEditHighlightLimit(forTextLength: textLength)
         )
 
         return await measure(label: "bench-keystroke-local-pass-\(label)", iterations: 25) {

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Testing
 import AppKit
 import SwiftUI
@@ -34,11 +35,11 @@ import SwiftUI
     }
 
     let editRange = NSRange(location: insertedLocation, length: 0)
-    let dirtyRange = HTMLEditor.structuralDirtyRange(
+    let dirtyRange = HTMLEditorPolicy.structuralDirtyRange(
         for: editRange,
         replacementLength: insertedText.utf16.count,
         in: newHTML as NSString,
-        expansion: HTMLEditor.highlightBudget(forTextLength: newHTML.utf16.count).visibleExpansion
+        expansion: HTMLEditorPolicy.highlightBudget(forTextLength: newHTML.utf16.count).visibleExpansion
     )
     let edit = HTMLEditor.Coordinator.PendingEdit(
         affectedRange: editRange,
@@ -63,3 +64,4 @@ import SwiftUI
     let colorAfterImmediatePass = appliedHighlightColour(textView, at: insertedLocation)
     #expect(colorAfterImmediatePass == theme.attributeName)
 }
+#endif

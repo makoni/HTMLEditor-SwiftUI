@@ -1,3 +1,4 @@
+#if os(macOS)
 import Testing
 import AppKit
 import SwiftUI
@@ -20,12 +21,20 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
 
 @MainActor
 @Test func testExternalUpdateAppliesWhenOnlyInteriorCharactersDiffer() throws {
-    // Same length, same first/last/middle code unit: the sampled fingerprint
-    // that used to gate this collides, so a programmatic find-and-replace was
-    // silently dropped and the binding and the editor diverged with no way back.
-    let displayed = "<p class=\"a\">Hello</p>"
-    let incoming = "<p class=\"b\">Hello</p>"
+    // Same length, one interior character different: a programmatic
+    // find-and-replace, which the editor must not mistake for its own echo.
+    //
+    // The document has to be **long**. This test used to run on 22 characters,
+    // where the 64-sample token it was guarding covered every offset three
+    // times over — so it passed regardless of the sampling and would have
+    // passed with any scheme at all. On a realistic document the old token
+    // collided on 10 186 of 10 250 single-character changes, and the change
+    // was dropped in silence.
+    let filler = String(repeating: "<div class=\"row\"><span>value</span></div>\n", count: 250)
+    let displayed = "<p class=\"a\">Hello</p>\n" + filler
+    let incoming = "<p class=\"b\">Hello</p>\n" + filler
     #expect(displayed.utf16.count == incoming.utf16.count)
+    #expect(displayed.utf16.count > 10_000)
 
     let coordinator = makeCoordinator(displaying: displayed)
     #expect(coordinator.shouldApplyExternalUpdate(incomingHTML: incoming) == true)
@@ -168,3 +177,4 @@ private func makeCoordinator(displaying html: String) -> HTMLEditor.Coordinator 
 
     #expect(coordinator.visibleHighlightDebounceTask != nil)
 }
+#endif

@@ -1,5 +1,9 @@
+import Foundation
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 
 enum HTMLHighlightScannerState: Hashable, Sendable {
@@ -378,6 +382,20 @@ final class HTMLHighlightPlanner {
         return startsInText && endsInText && hasOnlySelfContainedSpans ? .contextIndependent : .contextDependent
     }
 
+    /// Content hash of a chunk, over **every** code unit.
+    ///
+    /// This sampled five offsets — 0, L-1, L/2, L/4 and 3L/4 — and that is not
+    /// enough to answer "is this the same text?". The paragraph cache had the
+    /// identical fingerprint and the identical bug: type `a1`, delete one
+    /// character, type `2`, and the editor drew `a1`, because the document
+    /// length came back to what it was and the changed character was not one of
+    /// the five. Here the consequence is worse than a stale span list — a chunk
+    /// carries an `endState` that seeds the scanner for everything after it, so
+    /// one stale chunk mis-colours the rest of the window.
+    ///
+    /// Affordable for the same reason as the paragraph one: a chunk is bounded
+    /// by ``HTMLHighlightPlanBuilder/plannerChunkSize`` (512 units), and the
+    /// scan it guards reads the same characters one at a time anyway.
     private func textFingerprint(_ text: String, range: NSRange) -> Int {
         let nsText = text as NSString
         guard range.location != NSNotFound,
@@ -389,22 +407,13 @@ final class HTMLHighlightPlanner {
         var hasher = Hasher()
         hasher.combine(range.location)
         hasher.combine(range.length)
-        let sampleOffsets = sampledOffsets(forLength: range.length)
-        for offset in sampleOffsets {
-            hasher.combine(nsText.character(at: range.location + offset))
+        // Stack buffer, one bulk copy, one bulk hash — the idiom
+        // `HTMLHighlightPlanBuilder.buildChunk` uses on the same data.
+        withUnsafeTemporaryAllocation(of: unichar.self, capacity: range.length) { buffer in
+            guard let base = buffer.baseAddress else { return }
+            nsText.getCharacters(base, range: range)
+            hasher.combine(bytes: UnsafeRawBufferPointer(buffer))
         }
         return hasher.finalize()
     }
-
-    private func sampledOffsets(forLength length: Int) -> [Int] {
-        guard length > 0 else { return [] }
-        let candidates = [0, max(0, length - 1), length / 2, length / 4, (length * 3) / 4]
-        var offsets: [Int] = []
-        offsets.reserveCapacity(5)
-        for candidate in candidates where !offsets.contains(candidate) {
-            offsets.append(candidate)
-        }
-        return offsets
-    }
 }
-#endif

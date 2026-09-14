@@ -8,3 +8,4 @@ DerivedData/
 .netrc
 CLAUDE.md
 /.codegraph
+.swiftpm/xcode/xcuserdata/

@@ -9,7 +9,7 @@ extension HTMLEditor.Coordinator {
         guard let clipView = notification.object as? NSClipView,
               let scrollView = clipView.enclosingScrollView,
               let textView = scrollView.documentView as? NSTextView else { return }
-        if HTMLEditor.shouldUseScrollIdleMode(
+        if HTMLEditorPolicy.shouldUseScrollIdleMode(
             forTextLength: HTMLEditorTextKitSurface.textStorage(for: textView)?.length ?? 0
         ) {
             scheduleScrollIdleHighlighting(textView: textView, scrollView: scrollView)
@@ -37,7 +37,7 @@ extension HTMLEditor.Coordinator {
 
         visibleHighlightDebounceTask = Task { @MainActor [weak self, weak textView, weak scrollView] in
             do {
-                let delay = overrideDelay ?? HTMLEditor.semanticHighlightDelay(
+                let delay = overrideDelay ?? HTMLEditorPolicy.semanticHighlightDelay(
                     forTextLength: textView.map { HTMLEditorTextKitSurface.textStorage(for: $0)?.length ?? 0 } ?? 0,
                     trigger: trigger
                 )
@@ -106,7 +106,7 @@ extension HTMLEditor.Coordinator {
         let needsHighlighting = rangeNeedsHighlighting(visibleRange, text: textNSString, forceHighlight: forceHighlight)
 
         if needsHighlighting {
-            let budget = HTMLEditor.highlightBudget(forTextLength: textStorage.length)
+            let budget = HTMLEditorPolicy.highlightBudget(forTextLength: textStorage.length)
             let expandedRange = expandedHighlightRange(
                 for: visibleRange,
                 textLength: textStorage.length,
@@ -114,10 +114,10 @@ extension HTMLEditor.Coordinator {
                 trigger: trigger,
                 budget: budget
             )
-            let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
+            let currentTheme = parent.theme.current(for: HTMLEditorAppearance.resolve(from: textView.effectiveAppearance))
             let textLength = textStorage.length
             let currentVersion = documentVersion
-            let preserveExistingOverlay = HTMLEditor.shouldPreserveVisibleHighlight(
+            let preserveExistingOverlay = HTMLEditorPolicy.shouldPreserveVisibleHighlight(
                 detail: detail,
                 trigger: trigger,
                 hasExistingOverlay: visibleHighlightState.hasOverlay
@@ -188,7 +188,7 @@ extension HTMLEditor.Coordinator {
         scrollIdleTask?.cancel()
 
         let scheduledVersion = documentVersion
-        let delay = HTMLEditor.semanticHighlightDelay(
+        let delay = HTMLEditorPolicy.semanticHighlightDelay(
             forTextLength: HTMLEditorTextKitSurface.textStorage(for: textView)?.length ?? 0,
             trigger: .scroll
         )
@@ -270,12 +270,12 @@ extension HTMLEditor.Coordinator {
 
     @MainActor
     func recordHighlightedRange(_ range: NSRange, text: NSString) {
-        highlightCoverage.markHighlighted(HTMLEditor.alignedHighlightRange(range, in: text))
+        highlightCoverage.markHighlighted(HTMLEditorPolicy.alignedHighlightRange(range, in: text))
     }
 
     @MainActor
     func rangeNeedsHighlighting(_ range: NSRange, text: NSString, forceHighlight: Bool = false) -> Bool {
-        let alignedRange = HTMLEditor.alignedHighlightRange(range, in: text)
+        let alignedRange = HTMLEditorPolicy.alignedHighlightRange(range, in: text)
 
         if let dirtyRange = visibleHighlightState.dirtyRange,
            NSIntersectionRange(alignedRange, dirtyRange).length > 0 {
@@ -295,7 +295,7 @@ extension HTMLEditor.Coordinator {
         textLength: Int,
         textView: NSTextView
     ) {
-        let budget = HTMLEditor.highlightBudget(forTextLength: textLength)
+        let budget = HTMLEditorPolicy.highlightBudget(forTextLength: textLength)
         guard budget.prewarmEnabled else { return }
 
         prewarmTask?.cancel()
@@ -396,7 +396,7 @@ extension HTMLEditor.Coordinator {
             )
         )
 
-        let limit = HTMLEditor.highlightBudget(forTextLength: textLength).cachedRangePlanLimit
+        let limit = HTMLEditorPolicy.highlightBudget(forTextLength: textLength).cachedRangePlanLimit
         if cachedRangePlans.count > limit {
             cachedRangePlans.removeFirst(cachedRangePlans.count - limit)
         }
@@ -463,7 +463,7 @@ extension HTMLEditor.Coordinator {
 
         performVisibleRangeHighlighting(
             plan: plan,
-            theme: parent.theme.current(for: NSApp.effectiveAppearance),
+            theme: parent.theme.current(for: HTMLEditorAppearance.resolve(from: textView.effectiveAppearance)),
             surface: surface,
             replacesVisibleOverlay: true,
             clearsDirtyRange: false
@@ -478,7 +478,7 @@ extension HTMLEditor.Coordinator {
         detailRecoveryTask = Task { @MainActor [weak self, weak textView, weak scrollView] in
             do {
                 try await Task.sleep(
-                    nanoseconds: HTMLEditor.semanticHighlightDelay(
+                    nanoseconds: HTMLEditorPolicy.semanticHighlightDelay(
                         forTextLength: textView.map { HTMLEditorTextKitSurface.textStorage(for: $0)?.length ?? 0 } ?? 0,
                         trigger: .recovery
                     )

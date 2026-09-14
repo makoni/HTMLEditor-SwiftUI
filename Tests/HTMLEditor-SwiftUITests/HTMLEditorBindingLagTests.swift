@@ -1,3 +1,4 @@
+#if os(macOS)
 import Testing
 import AppKit
 import SwiftUI
@@ -77,3 +78,4 @@ private func makeLargeDocument() -> String {
     #expect(textView.string == afterSecond)
     #expect(textView.selectedRange() == selectionBefore)
 }
+#endif

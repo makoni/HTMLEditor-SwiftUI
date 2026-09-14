@@ -1,5 +1,5 @@
 import Testing
-import AppKit
+import Foundation
 @testable import HTMLEditor
 
 /// Two editors must not disturb each other's caches. This was once enforced by

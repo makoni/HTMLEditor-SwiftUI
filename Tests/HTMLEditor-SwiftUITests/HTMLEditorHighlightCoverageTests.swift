@@ -68,11 +68,11 @@ import Foundation
     coverage.markHighlighted(NSRange(location: 0, length: oldLength))
 
     let text = String(repeating: "a", count: newLength) as NSString
-    let dirtyRange = HTMLEditor.structuralDirtyRange(
+    let dirtyRange = HTMLEditorPolicy.structuralDirtyRange(
         for: editRange,
         replacementLength: insertedLength,
         in: text,
-        expansion: HTMLEditor.highlightBudget(forTextLength: newLength).visibleExpansion
+        expansion: HTMLEditorPolicy.highlightBudget(forTextLength: newLength).visibleExpansion
     )
 
     coverage.remapAfterEdit(

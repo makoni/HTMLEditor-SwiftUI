@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Foundation
 import HTMLEditor
@@ -74,3 +75,4 @@ struct HTMLEditorBenchmarks {
         String(format: "%.2f", value)
     }
 }
+#endif

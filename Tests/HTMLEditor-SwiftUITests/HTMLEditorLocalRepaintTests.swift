@@ -1,3 +1,4 @@
+#if os(macOS)
 import Testing
 import AppKit
 import SwiftUI
@@ -112,3 +113,4 @@ func testLocalRepaintKeepsColoursAwayFromTheCaret(textKit2: Bool) throws {
     let longTag = shortLine.utf16.count + 1
     #expect(appliedHighlightColour(textView, at: longTag) != theme.tag)
 }
+#endif

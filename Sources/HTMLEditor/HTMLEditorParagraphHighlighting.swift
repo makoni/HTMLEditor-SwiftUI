@@ -1,5 +1,9 @@
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
+import Foundation
 
 /// TextKit 2 highlighting, driven by the framework rather than by us.
 ///
@@ -68,7 +72,11 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
         let paragraph = textStorage.attributedSubstring(from: range)
         guard !plan.spans.isEmpty else { return nil }
 
-        let theme = parent.theme.current(for: NSApp.effectiveAppearance)
+        // The coordinator resolves this when the appearance changes. Reading
+        // it here would be wrong on iOS: `UITraitCollection.current` is only
+        // valid inside a trait-propagating context, and a content-storage
+        // delegate callback is not one.
+        let theme = appliedColorScheme ?? parent.theme.current(for: .light)
         let styled = NSMutableAttributedString(attributedString: paragraph)
 
         // Batch the attribute writes. A markup-dense line carries around a
@@ -105,16 +113,47 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
         let fingerprint: Int
     }
 
-    /// Cheap content check: the paragraph's length plus a handful of sampled
-    /// code units. Keying on the document's total length instead would miss on
-    /// every paragraph after every keystroke, which is exactly what this cache
-    /// exists to avoid.
+    /// Content hash of the paragraph, over **every** code unit.
+    ///
+    /// This used to sample five offsets — 0, L/4, L/2, 3L/4 and L-1 — which is
+    /// not enough to answer the question the cache asks ("is this the same
+    /// paragraph?"). Two same-length paragraphs differing anywhere else hashed
+    /// identically, so the cache handed back the older one and the editor drew
+    /// stale text.
+    ///
+    /// The symptom, reported from an iPhone: type `a1`, delete one character to
+    /// get `a`, type `2` — the editor shows `a1`. The storage was correct all
+    /// along; only the drawn paragraph was stale, which is why the next
+    /// keystroke (changing the length again, and so the key) fixed it. Measured
+    /// on the 81-character line in the test, the old fingerprint missed the
+    /// change in **76 of 81 positions**.
+    ///
+    /// Hashing the whole paragraph is affordable because it is bounded: a
+    /// paragraph longer than ``HTMLEditorDocumentSize/highlightedParagraphLimit``
+    /// is never styled, so it never reaches here. Measured, Release, on a
+    /// typical 120-unit markup line: 0.26 µs against 0.02 µs for the five
+    /// samples. That is 13× the old figure and still half the cost of the scan
+    /// it guards (0.51 µs), let alone a whole cache miss (4.6 µs — the scan
+    /// plus copying the paragraph, writing its spans and allocating the
+    /// element). The cache still saves 73% of a miss, and a viewport of 150
+    /// paragraphs pays 0.04 ms for the hashing — against a 16.7 ms frame.
+    /// `HTMLEditorParagraphCacheCostTests` keeps those relations honest.
     static func fingerprint(_ text: NSString, range: NSRange) -> Int {
         var hasher = Hasher()
         hasher.combine(range.length)
-        let offsets = [0, range.length / 4, range.length / 2, (range.length * 3) / 4, range.length - 1]
-        for offset in offsets where offset >= 0 && offset < range.length {
-            hasher.combine(text.character(at: range.location + offset))
+        guard range.length > 0 else { return hasher.finalize() }
+
+        // One bulk copy plus one bulk hash, rather than a call per character:
+        // `character(at:)` on a lazily bridged NSString is not cheap in a loop.
+        //
+        // On the stack, not the heap: this runs once per paragraph per layout
+        // pass, and an `Array` here would be a malloc and a zero-fill on that
+        // path — immediately overwritten by `getCharacters`. Bounded by
+        // ``HTMLEditorDocumentSize/highlightedParagraphLimit``, so it fits.
+        withUnsafeTemporaryAllocation(of: unichar.self, capacity: range.length) { buffer in
+            guard let base = buffer.baseAddress else { return }
+            text.getCharacters(base, range: range)
+            hasher.combine(bytes: UnsafeRawBufferPointer(buffer))
         }
         return hasher.finalize()
     }
@@ -125,18 +164,23 @@ extension HTMLEditor.Coordinator: @MainActor NSTextContentStorageDelegate {
     /// invalidates everything on any edit.
     static var paragraphPlanCacheLimit: Int { 512 }
 
-    /// Makes TextKit re-ask for the paragraphs in `range`, which is how a
-    /// highlight change that is not caused by editing — a theme swap — reaches
-    /// the screen. `invalidateRenderingAttributes` does not do this.
+    /// Drops the styled-paragraph cache and invalidates layout.
+    ///
+    /// ⚠️ This alone does **not** make TextKit re-ask the delegate. Measured on
+    /// both platforms with a call counter: `invalidateLayout(for:)` over the
+    /// whole document produced **+0** delegate calls and the colour on screen
+    /// did not change; only an edit to the text storage re-asks (+75 on iOS,
+    /// +179 on macOS). Theme switching works because the caller continues into
+    /// `HTMLSyntaxHighlighter.applyThemeBase`, whose
+    /// `beginEditing`/`endEditing` pair *is* that edit. Clearing the cache here
+    /// is what makes the re-ask produce new colours rather than cached ones —
+    /// so the two must stay paired.
     @MainActor
-    func invalidateParagraphHighlighting(in textView: NSTextView) {
+    func invalidateParagraphHighlighting(in textView: HTMLEditorPlatform.TextView) {
         styledParagraphCache.removeAll(keepingCapacity: true)
 
-        guard let layoutManager = textView.textLayoutManager,
-              let contentStorage = textView.textContentStorage else { return }
+        guard case .textKit2(let layoutManager, let contentStorage)? =
+                HTMLEditorTextKitSurface.resolve(for: textView) else { return }
         layoutManager.invalidateLayout(for: contentStorage.documentRange)
     }
 }
-
-
-#endif

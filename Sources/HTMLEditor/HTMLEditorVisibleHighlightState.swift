@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 struct HTMLEditorVisibleHighlightState {
@@ -181,4 +180,3 @@ struct HTMLEditorVisibleHighlightState {
         return NSRange(location: start, length: end - start)
     }
 }
-#endif

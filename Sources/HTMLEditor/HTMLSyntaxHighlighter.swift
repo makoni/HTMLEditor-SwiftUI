@@ -1,6 +1,9 @@
+import Foundation
 #if os(macOS)
 import AppKit
-import Foundation
+#else
+import UIKit
+#endif
 
 public enum HTMLSyntaxHighlighter {
     static let maxHighlightLength = 50_000
@@ -195,9 +198,17 @@ public enum HTMLSyntaxHighlighter {
         return HighlightPlan(coveredRange: mergedCoveredRange, spans: mergedSpans)
     }
 
+    /// Paints the base font and colour, and — as a side effect that the editor
+    /// depends on — makes TextKit 2 re-ask the content-storage delegate.
+    ///
+    /// That side effect is the real theme-switch mechanism. `invalidateLayout`
+    /// does **not** re-ask the delegate (measured: +0 delegate calls on both
+    /// platforms); only an edit to the text storage does, which is what the
+    /// `beginEditing`/`endEditing` pair below performs. See
+    /// ``HTMLEditor/Coordinator/invalidateParagraphHighlighting(in:)``.
     @MainActor
-    static func applyThemeBase(to textView: NSTextView, theme: HTMLEditorColorScheme) {
-        let fullRange = NSRange(location: 0, length: textView.string.utf16.count)
+    static func applyThemeBase(to textView: HTMLEditorPlatform.TextView, theme: HTMLEditorColorScheme) {
+        let fullRange = NSRange(location: 0, length: (textView.htmlEditorText as NSString).length)
         textView.font = theme.font
         textView.textColor = theme.foreground
         textView.backgroundColor = theme.background
@@ -234,7 +245,7 @@ public enum HTMLSyntaxHighlighter {
         }
     }
 
-    static func colour(for role: HighlightRole, theme: HTMLEditorColorScheme) -> NSColor {
+    static func colour(for role: HighlightRole, theme: HTMLEditorColorScheme) -> HTMLEditorPlatform.Colour {
         switch role {
         case .tag:
             return theme.tag
@@ -245,6 +256,3 @@ public enum HTMLSyntaxHighlighter {
         }
     }
 }
-
-
-#endif

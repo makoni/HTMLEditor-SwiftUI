@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 /// Document-size boundaries between the editor's three runtime regimes, and the
@@ -77,7 +76,12 @@ struct HTMLEditorHighlightBudget {
     let cachedRangePlanLimit: Int
 }
 
-extension HTMLEditor {
+/// Document-size policy, lifted out of `extension HTMLEditor`.
+///
+/// These are decisions about a *document*, not about a view, and hanging them
+/// off the SwiftUI representable meant they could not compile on a platform
+/// where that representable did not exist yet.
+enum HTMLEditorPolicy {
     nonisolated static func editMagnitude(
         oldLength: Int,
         newLength: Int,
@@ -277,4 +281,3 @@ extension HTMLEditor {
     }
 
 }
-#endif

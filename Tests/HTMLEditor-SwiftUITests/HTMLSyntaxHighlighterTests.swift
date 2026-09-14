@@ -1,5 +1,10 @@
 import Testing
+import Foundation
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 @testable import HTMLEditor
 
 @Test func testHTMLSyntaxHighlighting() async throws {
@@ -112,8 +117,8 @@ import AppKit
     let hrefRange = (html as NSString).range(of: "href")
     let valueRange = (html as NSString).range(of: "https://example.com")
 
-    let hrefColor = result.attribute(.foregroundColor, at: hrefRange.location, effectiveRange: nil) as? NSColor
-    let valueColor = result.attribute(.foregroundColor, at: valueRange.location, effectiveRange: nil) as? NSColor
+    let hrefColor = result.attribute(.foregroundColor, at: hrefRange.location, effectiveRange: nil) as? HTMLEditorPlatform.Colour
+    let valueColor = result.attribute(.foregroundColor, at: valueRange.location, effectiveRange: nil) as? HTMLEditorPlatform.Colour
 
     #expect(hrefColor == theme.attributeName)
     #expect(valueColor == theme.attributeValue)
@@ -157,8 +162,8 @@ import AppKit
     let leadingValueRange = (html as NSString).range(of: "\"\(String(repeating: "x", count: 20))")
     let trailingValueRange = (html as NSString).range(of: "tail\"")
 
-    let leadingValueColor = result.attribute(.foregroundColor, at: leadingValueRange.location, effectiveRange: nil) as? NSColor
-    let trailingValueColor = result.attribute(.foregroundColor, at: trailingValueRange.location, effectiveRange: nil) as? NSColor
+    let leadingValueColor = result.attribute(.foregroundColor, at: leadingValueRange.location, effectiveRange: nil) as? HTMLEditorPlatform.Colour
+    let trailingValueColor = result.attribute(.foregroundColor, at: trailingValueRange.location, effectiveRange: nil) as? HTMLEditorPlatform.Colour
 
     #expect(leadingValueColor == theme.attributeValue)
     #expect(trailingValueColor == theme.attributeValue)
@@ -177,7 +182,7 @@ import AppKit
     var hasTagHighlighting = false
 
     result.enumerateAttribute(.foregroundColor, in: fullRange) { value, _, _ in
-        if let color = value as? NSColor, color == theme.tag {
+        if let color = value as? HTMLEditorPlatform.Colour, color == theme.tag {
             hasTagHighlighting = true
         }
     }
@@ -185,6 +190,9 @@ import AppKit
     #expect(hasTagHighlighting == true)
 }
 
+// macOS only: it pins a text view to a TextKit generation, and TextKit 1
+// does not exist on iOS.
+#if os(macOS)
 @MainActor
 @Test(arguments: [false, true])
 func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme(textKit2: Bool) async throws {
@@ -212,18 +220,19 @@ func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme(textKit
         .foregroundColor,
         at: tagRange.location,
         effectiveRange: nil
-    ) as? NSColor
+    ) as? HTMLEditorPlatform.Colour
     let permanentPlainTextColor = storage?.attribute(
         .foregroundColor,
         at: plainTextRange.location,
         effectiveRange: nil
-    ) as? NSColor
+    ) as? HTMLEditorPlatform.Colour
     let temporaryTagColor = appliedHighlightColour(textView, at: tagRange.location)
 
     #expect(permanentTagColor == theme.foreground)
     #expect(permanentPlainTextColor == theme.foreground)
     #expect(temporaryTagColor == theme.tag)
 }
+#endif
 
 @Test func testMergedPlanReplacesOverlayRangeWithoutDroppingOutsideSpans() async throws {
     let basePlan = HTMLSyntaxHighlighter.HighlightPlan(
@@ -247,6 +256,8 @@ func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme(textKit
     #expect(merged.spans.contains { $0.range == NSRange(location: 10, length: 4) })
 }
 
+// macOS only: temporary attributes are a TextKit 1 mechanism.
+#if os(macOS)
 /// Regression test for Bug 1: applyTemporary(plan:replacing:) must clear the
 /// full overlap region, not just positions listed in previousPlan.spans.
 ///
@@ -281,7 +292,7 @@ func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme(textKit
     var effectiveRange = NSRange(location: NSNotFound, length: 0)
     let colorAfterPrewarm = layoutManager.temporaryAttribute(
         .foregroundColor, atCharacterIndex: 5, effectiveRange: &effectiveRange
-    ) as? NSColor
+    ) as? HTMLEditorPlatform.Colour
     #expect(colorAfterPrewarm == theme.attributeName, "Precondition: prewarm should have set attributeName")
 
     // 2. The user fixes the HTML. The new visible plan correctly treats position 5
@@ -302,12 +313,13 @@ func testApplyFullHighlightPlanKeepsPermanentTextStorageColorAtBaseTheme(textKit
     //    full-overlap clear introduced by the Bug 1 fix.
     let colorAfterFix = layoutManager.temporaryAttribute(
         .foregroundColor, atCharacterIndex: 5, effectiveRange: nil
-    ) as? NSColor
+    ) as? HTMLEditorPlatform.Colour
     #expect(
         colorAfterFix != theme.attributeName,
         "Stale prewarm attributeName highlight must be cleared by the replacing plan"
     )
 }
+#endif
 
 @Test func testNormalizedRangeStaysBoundedOnMinifiedHTML() async throws {
     // Minified HTML is one line, so snapping to line boundaries used to expand

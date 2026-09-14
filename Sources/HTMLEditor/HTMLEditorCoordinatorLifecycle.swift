@@ -11,7 +11,7 @@ extension HTMLEditor.Coordinator {
         guard textView.textLayoutManager == nil else { return }
         guard let layoutManager = textView.layoutManager else { return }
         let currentlyEnabled = layoutManager.allowsNonContiguousLayout
-        let shouldEnable = HTMLEditor.shouldUseNonContiguousLayout(
+        let shouldEnable = HTMLEditorPolicy.shouldUseNonContiguousLayout(
             forTextLength: textLength,
             currentlyEnabled: currentlyEnabled
         )
@@ -40,87 +40,8 @@ extension HTMLEditor.Coordinator {
         performFullHighlighting(html: html, theme: theme, textView: textView)
     }
 
-    @MainActor
-    func shouldApplyExternalUpdate(incomingHTML: String) -> Bool {
-        // Deliberately never compares the documents.
-        //
-        // Comparing them is what made typing slow: `String ==` tests canonical
-        // equivalence, normalising both sides through NFD and NFC and walking
-        // them scalar by scalar, which on the lazily bridged NSBigMutableString
-        // a live NSTextStorage hands back costs ~570 ms for 13 MB. Literal
-        // NSString equality is better and still ~66 ms. Neither belongs on a
-        // path SwiftUI runs after every keystroke.
-        //
-        // Worse, there is nothing to compare against: `previousText` holds that
-        // same live string, so it reports the *current* text rather than what
-        // was displayed when it was assigned. The comparison could never have
-        // been the cheap identity check it looked like.
-        //
-        // So recognise our own echo by a token taken when the write was made:
-        // length plus sampled code units, O(1) to build and to check.
-        // Already on screen: nothing to do. SwiftUI calls back with the same
-        // value after the initial makeNSView, and re-applying it would rebuild
-        // the whole document for nothing.
-        if displayedToken?.matches(incomingHTML) == true {
-            lastBindingWriteToken = nil
-            return false
-        }
 
-        guard let token = lastBindingWriteToken else { return true }
 
-        if token.matches(incomingHTML) {
-            // Our own value coming back. Keep the token while the text view has
-            // moved on, because more echoes of it may still arrive.
-            return false
-        }
-
-        // Something else — a genuine external change, or a parent that
-        // normalises what it stores. Either way it has to be applied.
-        lastBindingWriteToken = nil
-        return true
-    }
-
-    @MainActor
-    func scheduleBindingSync(for html: String) {
-        pendingLocalBindingSyncHTML = html
-        bindingSyncTask?.cancel()
-
-        guard let delay = HTMLEditor.bindingSyncDelay(forTextLength: html.utf16.count) else {
-            pendingLocalBindingSyncHTML = nil
-            lastBindingWriteToken = DocumentToken(html)
-            HTMLEditorSignpost.interval("binding-write-immediate") { parent.html = html }
-            return
-        }
-
-        let scheduledVersion = documentVersion
-        bindingSyncTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: delay)
-            } catch {
-                return
-            }
-
-            guard let self,
-                  self.documentVersion == scheduledVersion,
-                  self.pendingLocalBindingSyncHTML != nil else { return }
-            self.pendingLocalBindingSyncHTML = nil
-            self.lastBindingWriteToken = DocumentToken(html)
-            HTMLEditorSignpost.interval("binding-write-deferred") { self.parent.html = html }
-        }
-    }
-
-    @MainActor
-    func flushPendingBindingSync() {
-        bindingSyncTask?.cancel()
-        bindingSyncTask = nil
-
-        guard let pendingLocalBindingSyncHTML else { return }
-        self.pendingLocalBindingSyncHTML = nil
-        lastBindingWriteToken = DocumentToken(pendingLocalBindingSyncHTML)
-        HTMLEditorSignpost.interval("binding-write-flush") {
-            parent.html = pendingLocalBindingSyncHTML
-        }
-    }
 
     @MainActor
     func performFullHighlighting(html: String, theme: HTMLEditorColorScheme, textView: NSTextView) {
@@ -180,7 +101,7 @@ extension HTMLEditor.Coordinator {
             let fullRange = NSRange(location: 0, length: textView.string.utf16.count)
             surface.clearHighlights(in: fullRange)
             if let plan {
-                let budget = HTMLEditor.highlightBudget(forTextLength: textView.string.utf16.count)
+                let budget = HTMLEditorPolicy.highlightBudget(forTextLength: textView.string.utf16.count)
                 let visibleWindow = visibleHighlightWindow(
                     for: textView,
                     scrollView: scrollView,
@@ -278,14 +199,14 @@ extension HTMLEditor.Coordinator {
     /// a caller swapping the theme while the appearance stays put.
     @MainActor
     func applyColorSchemeChangeIfNeeded(textView: NSTextView) {
-        let currentScheme = parent.theme.current(for: NSApp.effectiveAppearance)
+        let currentScheme = parent.theme.current(for: HTMLEditorAppearance.resolve(from: textView.effectiveAppearance))
         guard currentScheme != appliedColorScheme else { return }
         systemAppearanceChanged(textView: textView)
     }
 
     @MainActor
     func systemAppearanceChanged(textView: NSTextView) {
-        let currentTheme = parent.theme.current(for: NSApp.effectiveAppearance)
+        let currentTheme = parent.theme.current(for: HTMLEditorAppearance.resolve(from: textView.effectiveAppearance))
         appliedColorScheme = currentTheme
         // Under TextKit 2 the colours are display attributes on vended
         // paragraphs, so a theme change reaches the screen by making TextKit
@@ -297,7 +218,7 @@ extension HTMLEditor.Coordinator {
         // The knob was pinned to .light, which is near-invisible over a light
         // background; follow the appearance instead.
         textView.enclosingScrollView?.scrollerKnobStyle =
-            NSApp.effectiveAppearance.name == .darkAqua ? .light : .default
+            HTMLEditorAppearance.resolve(from: textView.effectiveAppearance) == .dark ? .light : .default
 
         let currentHTML = textView.string
         if let cachedFullHighlightPlan,

@@ -1,7 +1,6 @@
-#if os(macOS)
 import Foundation
 
-extension HTMLEditor {
+extension HTMLEditorPolicy {
     nonisolated static func structuralAlignmentRadius(forTextLength textLength: Int) -> Int {
         textLength > HTMLEditorDocumentSize.conservative ? 160 : 224
     }
@@ -85,4 +84,3 @@ extension HTMLEditor {
         min(textLength, index + 1)
     }
 }
-#endif

@@ -1,4 +1,3 @@
-#if os(macOS)
 import Foundation
 
 struct HTMLEditorHighlightCoverage {
@@ -129,4 +128,3 @@ struct HTMLEditorHighlightCoverage {
         return remapped
     }
 }
-#endif

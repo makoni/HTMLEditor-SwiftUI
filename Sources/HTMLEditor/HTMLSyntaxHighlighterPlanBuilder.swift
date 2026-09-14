@@ -1,5 +1,9 @@
+import Foundation
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 
 enum HTMLHighlightPlanBuilder {
@@ -432,4 +436,3 @@ enum HTMLHighlightPlanBuilder {
         String(character).utf16.first!
     }
 }
-#endif

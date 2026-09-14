@@ -1,7 +1,13 @@
 import Testing
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 @testable import HTMLEditor
 
+/// Cross-platform on purpose: it names no AppKit type, and gating it was what
+/// kept six otherwise pure test files off iOS.
 func makeTestTheme() -> HTMLEditorColorScheme {
     HTMLEditorColorScheme(
         foreground: .black,
@@ -13,6 +19,7 @@ func makeTestTheme() -> HTMLEditorColorScheme {
     )
 }
 
+#if os(macOS)
 /// Reads back the highlight colour at a location, whichever TextKit the view is
 /// using: temporary attributes under TextKit 1, rendering attributes under
 /// TextKit 2. Must not touch `layoutManager` unless the view is already
@@ -73,3 +80,4 @@ func makeTextView(
     textView.delegate = coordinator
     return textView
 }
+#endif

@@ -1,3 +1,4 @@
+#if os(macOS)
 import Foundation
 
 /// Generates HTML shaped like the documents this editor actually struggles with,
@@ -133,3 +134,4 @@ enum BenchmarkDocument {
         """
     }
 }
+#endif

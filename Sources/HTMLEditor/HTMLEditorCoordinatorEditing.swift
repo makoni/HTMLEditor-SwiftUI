@@ -14,7 +14,7 @@ extension HTMLEditor.Coordinator {
             newTextLength: newTextLength
         )
 
-        guard let delay = HTMLEditor.editBurstCoalescingDelay(forTextLength: newTextLength) else {
+        guard let delay = HTMLEditorPolicy.editBurstCoalescingDelay(forTextLength: newTextLength) else {
             refreshDirtyBlockHighlightAfterEdit(textView: textView, newTextLength: newTextLength)
             return
         }
@@ -46,11 +46,11 @@ extension HTMLEditor.Coordinator {
         }
 
         let immediateRange: NSRange
-        if HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: newTextLength) {
-            immediateRange = HTMLEditor.localDirtyHighlightRange(
+        if HTMLEditorPolicy.shouldUseTwoPhaseEditing(forTextLength: newTextLength) {
+            immediateRange = HTMLEditorPolicy.localDirtyHighlightRange(
                 around: dirtyRange,
                 textLength: newTextLength,
-                maxLength: HTMLEditor.immediateEditHighlightLimit(forTextLength: newTextLength)
+                maxLength: HTMLEditorPolicy.immediateEditHighlightLimit(forTextLength: newTextLength)
             )
         } else {
             // Small documents keep full detail while typing, so re-highlight the
@@ -72,15 +72,15 @@ extension HTMLEditor.Coordinator {
         textView: NSTextView,
         newTextLength: Int
     ) {
-        guard HTMLEditor.shouldUseTwoPhaseEditing(forTextLength: newTextLength),
+        guard HTMLEditorPolicy.shouldUseTwoPhaseEditing(forTextLength: newTextLength),
               let dirtyRange = visibleHighlightState.dirtyRange else {
             return
         }
 
-        let localRange = HTMLEditor.localDirtyHighlightRange(
+        let localRange = HTMLEditorPolicy.localDirtyHighlightRange(
             around: dirtyRange,
             textLength: newTextLength,
-            maxLength: HTMLEditor.localDirtyHighlightLimit(forTextLength: newTextLength)
+            maxLength: HTMLEditorPolicy.localDirtyHighlightLimit(forTextLength: newTextLength)
         )
         applyLocalDirtyHighlight(in: localRange, textView: textView)
     }
@@ -112,7 +112,7 @@ extension HTMLEditor.Coordinator {
         applyHighlight(
             clippedLocalPlan,
             recordingVisiblePlan: mergedPlan,
-            theme: parent.theme.current(for: NSApp.effectiveAppearance),
+            theme: parent.theme.current(for: HTMLEditorAppearance.resolve(from: textView.effectiveAppearance)),
             surface: surface
         )
     }

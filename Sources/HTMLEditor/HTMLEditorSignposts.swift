@@ -1,4 +1,3 @@
-#if os(macOS)
 import os
 
 /// Signposts around the editor's main-thread work, so a trace says which part
@@ -11,6 +10,13 @@ import os
 enum HTMLEditorSignpost {
     static let log = OSLog(subsystem: "com.reincubate.HTMLEditor", category: "editing")
 
+    /// A one-shot event, for things that have no duration — "the pull path is
+    /// not available", say.
+    @inline(__always)
+    static func event(_ name: StaticString) {
+        os_signpost(.event, log: log, name: name)
+    }
+
     /// Wraps a block in a signposted interval.
     @inline(__always)
     static func interval<T>(_ name: StaticString, _ body: () -> T) -> T {
@@ -20,4 +26,3 @@ enum HTMLEditorSignpost {
         return body()
     }
 }
-#endif

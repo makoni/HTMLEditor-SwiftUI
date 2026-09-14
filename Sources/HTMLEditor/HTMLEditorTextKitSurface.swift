@@ -1,5 +1,9 @@
 #if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
+import Foundation
 
 /// Which TextKit generation backs a newly created text view.
 ///
@@ -16,7 +20,16 @@ import AppKit
 /// measurement. Set `HTMLEDITOR_TEXTKIT=1` to force the old path.
 enum HTMLEditorTextKitVersion {
     static var preferred: Bool {
-        ProcessInfo.processInfo.environment["HTMLEDITOR_TEXTKIT"] != "1"
+        #if os(macOS)
+        return ProcessInfo.processInfo.environment["HTMLEDITOR_TEXTKIT"] != "1"
+        #else
+        // iOS has no TextKit 1 path: `UITextView` is TextKit 2 by default from
+        // iOS 16, and the push pipeline the escape hatch falls back to is
+        // macOS-only (it needs `NSClipView` bounds observation, and
+        // `UITextView` is its own scroll view). A fallback there would degrade
+        // to plain text, not to TextKit 1 — see `resolve(for:)`.
+        return true
+        #endif
     }
 }
 
@@ -31,29 +44,67 @@ enum HTMLEditorTextKitVersion {
 /// so every access has to go through here rather than reaching for the text
 /// view's TextKit 1 properties directly.
 enum HTMLEditorTextKitSurface {
+    #if os(macOS)
     case textKit1(NSLayoutManager)
+    #endif
     case textKit2(NSTextLayoutManager, NSTextContentStorage)
+
+    /// Why a surface could not be resolved. `nil` used to mean two different
+    /// things — "no layout manager" and "the view fell back to TextKit 1" —
+    /// and on iOS the second is the failure that looks like success.
+    enum Unavailable: Error {
+        case noLayoutManager
+        case fellBackToTextKit1
+    }
 
     /// Resolves the surface without forcing a TextKit 2 view into compatibility
     /// mode: `textLayoutManager` is nil on a TextKit 1 view, and only then is
     /// `layoutManager` — the property that triggers the fallback — touched.
     @MainActor
-    static func resolve(for textView: NSTextView) -> HTMLEditorTextKitSurface? {
+    static func resolve(for textView: HTMLEditorPlatform.TextView) -> HTMLEditorTextKitSurface? {
+        #if os(macOS)
         if let layoutManager = textView.textLayoutManager,
            let contentStorage = textView.textContentStorage {
             return .textKit2(layoutManager, contentStorage)
         }
         guard let layoutManager = textView.layoutManager else { return nil }
         return .textKit1(layoutManager)
+        #else
+        // `UITextView` has no `textContentStorage` property — the content
+        // storage is reached through the layout manager. Touching
+        // `.layoutManager` (or `textContainer.layoutManager`) here would spring
+        // the one-way trapdoor and drop the view to TextKit 1 permanently.
+        guard let layoutManager = textView.textLayoutManager,
+              let contentStorage = layoutManager.textContentManager as? NSTextContentStorage
+        else {
+            HTMLEditorSignpost.event("textkit2-unavailable")
+            return nil
+        }
+        return .textKit2(layoutManager, contentStorage)
+        #endif
     }
 
     /// The backing storage, reached through the content storage under TextKit 2.
+    /// The backing storage, reached through the content storage under
+    /// TextKit 2.
+    ///
+    /// Reading `UITextView.textStorage` is in fact safe — measured:
+    /// `tv.textStorage === contentStorage.textStorage` and the view stays on
+    /// TextKit 2 — but going through the content storage costs nothing and
+    /// keeps one rule ("never touch TextKit 1 properties") rather than two.
     @MainActor
-    static func textStorage(for textView: NSTextView) -> NSTextStorage? {
+    static func textStorage(for textView: HTMLEditorPlatform.TextView) -> NSTextStorage? {
+        #if os(macOS)
         if let contentStorage = textView.textContentStorage {
             return contentStorage.textStorage
         }
         return textView.textStorage
+        #else
+        if let contentStorage = textView.textLayoutManager?.textContentManager as? NSTextContentStorage {
+            return contentStorage.textStorage
+        }
+        return textView.textStorage
+        #endif
     }
 
     var isTextKit2: Bool {
@@ -68,8 +119,10 @@ enum HTMLEditorTextKitSurface {
         guard range.location != NSNotFound, range.length > 0 else { return }
 
         switch self {
+        #if os(macOS)
         case .textKit1(let layoutManager):
             layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+        #endif
         case .textKit2:
             // Nothing to clear: under TextKit 2 the colours are display
             // attributes vended per paragraph by the content storage delegate,
@@ -94,7 +147,7 @@ enum HTMLEditorTextKitSurface {
         let nameColour = theme.attributeName
         let valueColour = theme.attributeValue
 
-        func colour(for role: HTMLSyntaxHighlighter.HighlightRole) -> NSColor {
+        func colour(for role: HTMLSyntaxHighlighter.HighlightRole) -> HTMLEditorPlatform.Colour {
             switch role {
             case .tag: return tagColour
             case .attributeName: return nameColour
@@ -103,6 +156,7 @@ enum HTMLEditorTextKitSurface {
         }
 
         switch self {
+        #if os(macOS)
         case .textKit1(let layoutManager):
             // Build the three dictionaries once rather than per span; this runs
             // on the main thread several times per keystroke.
@@ -115,6 +169,7 @@ enum HTMLEditorTextKitSurface {
                 guard span.range.location >= 0, let value = attributes[span.role] else { continue }
                 layoutManager.addTemporaryAttributes(value, forCharacterRange: span.range)
             }
+        #endif
 
         case .textKit2:
             // Deliberately nothing. `addRenderingAttribute` is the API this
@@ -135,12 +190,14 @@ enum HTMLEditorTextKitSurface {
     /// their positions instead, which is a bounded lookup rather than a walk
     /// from the start of the document.
     @MainActor
-    func visibleCharacterRange(in visibleRect: NSRect, textContainer: NSTextContainer?) -> NSRange? {
+    func visibleCharacterRange(in visibleRect: CGRect, textContainer: NSTextContainer?) -> NSRange? {
         switch self {
+        #if os(macOS)
         case .textKit1(let layoutManager):
             guard let textContainer else { return nil }
             let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
             return layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        #endif
 
         case .textKit2(let layoutManager, let contentStorage):
             let topPoint = CGPoint(x: visibleRect.minX, y: visibleRect.minY)
@@ -188,4 +245,3 @@ enum HTMLEditorTextKitSurface {
         return NSRange(location: max(0, location), length: max(0, length))
     }
 }
-#endif
