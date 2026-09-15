@@ -2,17 +2,16 @@
 
 <img src="https://arm1.ru/img/uploaded/html-editor-for-swiftui-1-1-0.webp" alt="SwiftUI text editor for macOS with HTML syntax highlighting">
 
-`HTMLEditor-SwiftUI` is a macOS Swift package that provides a SwiftUI HTML editor with syntax highlighting, theme support, and an adaptive large-document runtime designed to keep typing and scrolling responsive.
+`HTMLEditor-SwiftUI` is a Swift package that provides a SwiftUI HTML editor with syntax highlighting, theme support, and an adaptive large-document runtime designed to keep typing and scrolling responsive. It runs on macOS, iOS and iPadOS, backed by AppKit and UIKit respectively and by TextKit 2 on both.
 
 ## Requirements
 
-- macOS 13+
-- Swift 6 toolchain
-- Compatible with Swift 6.3
+- macOS 15+, iOS 17+, iPadOS 17+
+- Swift 6.2 toolchain
 
 ## Features
 
-- SwiftUI `HTMLEditor` backed by AppKit for macOS editing behavior.
+- SwiftUI `HTMLEditor` backed by AppKit on macOS and UIKit on iOS and iPadOS.
 - HTML syntax highlighting for tags, attribute names, and attribute values.
 - Custom light and dark themes with configurable fonts and colors.
 - Built on **TextKit 2**, which lays out only the visible portion of the

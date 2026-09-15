@@ -39,9 +39,7 @@ extension HTMLEditor: UIViewRepresentable {
         textView.smartInsertDeleteType = .no
         textView.autocapitalizationType = .none
         textView.allowsEditingTextAttributes = false
-        if #available(iOS 17.0, *) {
-            textView.inlinePredictionType = .no
-        }
+        textView.inlinePredictionType = .no
         if #available(iOS 18.0, *) {
             textView.mathExpressionCompletionType = .no
             textView.writingToolsBehavior = .none
@@ -169,22 +167,18 @@ public final class HTMLEditorTextView: UITextView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The view-as-parameter closure form: it hands the observer back the view
+    /// rather than capturing it, so there is no cycle and no `[weak self]`.
+    ///
+    /// The `traitCollectionDidChange` override that used to sit beside this is
+    /// gone with the iOS 16 floor. It was not an alternative but a fallback,
+    /// and it early-returned on 17 and above — which is now every supported
+    /// version.
     private func observeTraitChanges() {
-        if #available(iOS 17.0, *) {
-            registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
-                (view: HTMLEditorTextView, _: UITraitCollection) in
-                view.coordinator?.systemAppearanceChanged(textView: view)
-            }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) {
+            (view: HTMLEditorTextView, _: UITraitCollection) in
+            view.coordinator?.systemAppearanceChanged(textView: view)
         }
-    }
-
-    // iOS 16 has no `registerForTraitChanges`, so both paths are needed at this
-    // deployment floor — they are not alternatives.
-    public override func traitCollectionDidChange(_ previous: UITraitCollection?) {
-        super.traitCollectionDidChange(previous)
-        if #available(iOS 17.0, *) { return }
-        guard traitCollection.userInterfaceStyle != previous?.userInterfaceStyle else { return }
-        coordinator?.systemAppearanceChanged(textView: self)
     }
 }
 

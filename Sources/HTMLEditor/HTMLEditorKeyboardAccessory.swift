@@ -77,11 +77,8 @@ extension HTMLEditor.Coordinator {
         let host = UIHostingController(rootView: accessory())
         host.view.backgroundColor = .clear
         // Without this the hosting view keeps the safe-area inset of the
-        // window it is measured against and the row sits visibly low. The
-        // package's floor is iOS 16, so this stays conditional.
-        if #available(iOS 16.4, *) {
-            host.safeAreaRegions = []
-        }
+        // window it is measured against and the row sits visibly low.
+        host.safeAreaRegions = []
         accessoryHost = host
         textView.inputAccessoryView = HTMLEditorAccessoryView(content: host.view)
 
