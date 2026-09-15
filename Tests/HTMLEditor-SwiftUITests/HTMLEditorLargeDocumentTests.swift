@@ -154,11 +154,11 @@ final class HTMLEditorLargeDocumentTests: XCTestCase {
         let smallHarness = try makeTextView("")
         let largeHarness = try makeTextView("")
 
-        let smallTime = try measureOnce {
+        let smallTime = measureOnce {
             smallHarness.textView.htmlEditorText = Self.small
             self.layOutViewport(smallHarness.textView)
         }
-        let largeTime = try measureOnce {
+        let largeTime = measureOnce {
             largeHarness.textView.htmlEditorText = Self.large
             self.layOutViewport(largeHarness.textView)
         }
@@ -256,7 +256,7 @@ final class HTMLEditorLargeDocumentTests: XCTestCase {
         let middle = text.length / 2
         let paragraphRange = text.paragraphRange(for: NSRange(location: middle, length: 0))
 
-        let time = try measureOnce {
+        let time = measureOnce {
             for _ in 0..<200 {
                 _ = HTMLHighlightPlanBuilder.buildPlan(in: text, coveredRange: paragraphRange)
             }

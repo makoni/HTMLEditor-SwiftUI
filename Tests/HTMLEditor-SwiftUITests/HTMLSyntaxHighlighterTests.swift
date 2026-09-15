@@ -40,6 +40,11 @@ import UIKit
     #expect(result.string == html)
 }
 
+// Exercises `highlightRange`, which is deprecated but still shipped: it
+// writes colours into the text storage instead of vending them per
+// paragraph. Marking the test deprecated too is how Swift says "the call
+// is deliberate" — without it every call site warns.
+@available(*, deprecated)
 @Test func testEmptyTextIncrementalHighlighting() async throws {
     let textStorage = NSTextStorage(string: "")
     var expandedRange = NSRange(location: 0, length: 0)
@@ -55,6 +60,11 @@ import UIKit
     #expect(expandedRange.length == 0)
 }
 
+// Exercises `highlightRange`, which is deprecated but still shipped: it
+// writes colours into the text storage instead of vending them per
+// paragraph. Marking the test deprecated too is how Swift says "the call
+// is deliberate" — without it every call site warns.
+@available(*, deprecated)
 @Test func testInvalidRangeHandling() async throws {
     let textStorage = NSTextStorage(string: "<div>Test</div>")
     var expandedRange = NSRange(location: 0, length: 0)
@@ -70,6 +80,11 @@ import UIKit
     #expect(expandedRange.length == 0)
 }
 
+// Exercises `highlightRange`, which is deprecated but still shipped: it
+// writes colours into the text storage instead of vending them per
+// paragraph. Marking the test deprecated too is how Swift says "the call
+// is deliberate" — without it every call site warns.
+@available(*, deprecated)
 @Test func testUTF16RangeHandling() async throws {
     let html = #"<div title="emoji 😀">Привет 😀</div>"#
     let textStorage = NSTextStorage(string: html)
@@ -87,6 +102,11 @@ import UIKit
     #expect(NSMaxRange(expandedRange) <= textStorage.length)
 }
 
+// Exercises `highlightRange`, which is deprecated but still shipped: it
+// writes colours into the text storage instead of vending them per
+// paragraph. Marking the test deprecated too is how Swift says "the call
+// is deliberate" — without it every call site warns.
+@available(*, deprecated)
 @Test func testPartialAnchorTagDoesNotBreakHighlighting() async throws {
     let html = "<div>prefix <a href suffix</div>"
     let result = HTMLSyntaxHighlighter.highlight(html: html, theme: makeTestTheme())
@@ -124,6 +144,11 @@ import UIKit
     #expect(valueColor == theme.attributeValue)
 }
 
+// Exercises `highlightRange`, which is deprecated but still shipped: it
+// writes colours into the text storage instead of vending them per
+// paragraph. Marking the test deprecated too is how Swift says "the call
+// is deliberate" — without it every call site warns.
+@available(*, deprecated)
 @Test func testLargeDocumentMidEditRangeHighlighting() async throws {
     let repeated = String(repeating: "<p>section</p>\n", count: 2000)
     let insertion = "<a href"

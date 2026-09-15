@@ -69,8 +69,12 @@ import Foundation
     let planner = HTMLHighlightPlanner()
     let html = String(repeating: "<p class=\"row\">text</p>\n", count: 12)
 
+    // `fullPlan` returns a non-optional, so the `!= nil` this used to assert
+    // was always true — a check that could not fail. Assert what the call is
+    // actually for: a plan covering the whole document, with spans in it.
     let fullPlan = await planner.fullPlan(for: html)
-    #expect(fullPlan != nil)
+    #expect(fullPlan.coveredRange == NSRange(location: 0, length: (html as NSString).length))
+    #expect(fullPlan.spans.isEmpty == false)
     let countsAfterFull = await planner.counts()
     #expect(countsAfterFull.plans >= 1)
 
