@@ -73,27 +73,6 @@ public enum HTMLSyntaxHighlighter {
         return attributed
     }
 
-    @available(*, deprecated, message: "Writes colours straight into NSTextStorage, which breaks undo and can re-enter textDidChange. The editor applies highlights as temporary attributes on NSLayoutManager instead.")
-    public static func highlightRange(
-        in textStorage: NSTextStorage,
-        range: NSRange,
-        theme: HTMLEditorColorScheme,
-        expandedRange: inout NSRange
-    ) {
-        let plan = HTMLHighlightPlanBuilder.rangePlan(for: textStorage.string, requestedRange: range)
-        expandedRange = plan.coveredRange
-        apply(plan: plan, to: textStorage, theme: theme)
-    }
-
-    static func apply(plan: HighlightPlan, to textStorage: NSTextStorage, theme: HTMLEditorColorScheme) {
-        guard plan.coveredRange.location != NSNotFound, plan.coveredRange.length > 0 else { return }
-
-        textStorage.removeAttribute(.foregroundColor, range: plan.coveredRange)
-        textStorage.addAttribute(.font, value: theme.font, range: plan.coveredRange)
-        textStorage.addAttribute(.foregroundColor, value: theme.foreground, range: plan.coveredRange)
-        apply(spans: plan.spans, to: textStorage, theme: theme)
-    }
-
     @MainActor
     static func clearHighlights(in surface: HTMLEditorTextKitSurface, range: NSRange) {
         surface.clearHighlights(in: range)
@@ -234,14 +213,6 @@ public enum HTMLSyntaxHighlighter {
             guard span.range.location >= 0,
                   NSMaxRange(span.range) <= attributedString.length else { continue }
             attributedString.addAttribute(.foregroundColor, value: colour(for: span.role, theme: theme), range: span.range)
-        }
-    }
-
-    private static func apply(spans: [HighlightSpan], to textStorage: NSTextStorage, theme: HTMLEditorColorScheme) {
-        for span in spans {
-            guard span.range.location >= 0,
-                  NSMaxRange(span.range) <= textStorage.length else { continue }
-            textStorage.addAttribute(.foregroundColor, value: colour(for: span.role, theme: theme), range: span.range)
         }
     }
 

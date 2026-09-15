@@ -40,91 +40,51 @@ import UIKit
     #expect(result.string == html)
 }
 
-// Exercises `highlightRange`, which is deprecated but still shipped: it
-// writes colours into the text storage instead of vending them per
-// paragraph. Marking the test deprecated too is how Swift says "the call
-// is deliberate" — without it every call site warns.
-@available(*, deprecated)
 @Test func testEmptyTextIncrementalHighlighting() async throws {
-    let textStorage = NSTextStorage(string: "")
-    var expandedRange = NSRange(location: 0, length: 0)
+    let plan = HTMLHighlightPlanBuilder.rangePlan(for: "", requestedRange: NSRange(location: 0, length: 0))
 
-    HTMLSyntaxHighlighter.highlightRange(
-        in: textStorage,
-        range: NSRange(location: 0, length: 0),
-        theme: makeTestTheme(),
-        expandedRange: &expandedRange
-    )
-
-    #expect(expandedRange.location == 0)
-    #expect(expandedRange.length == 0)
+    #expect(plan.coveredRange.location == 0)
+    #expect(plan.coveredRange.length == 0)
+    #expect(plan.spans.isEmpty)
 }
 
-// Exercises `highlightRange`, which is deprecated but still shipped: it
-// writes colours into the text storage instead of vending them per
-// paragraph. Marking the test deprecated too is how Swift says "the call
-// is deliberate" — without it every call site warns.
-@available(*, deprecated)
 @Test func testInvalidRangeHandling() async throws {
-    let textStorage = NSTextStorage(string: "<div>Test</div>")
-    var expandedRange = NSRange(location: 0, length: 0)
-
-    HTMLSyntaxHighlighter.highlightRange(
-        in: textStorage,
-        range: NSRange(location: NSNotFound, length: 0),
-        theme: makeTestTheme(),
-        expandedRange: &expandedRange
+    let plan = HTMLHighlightPlanBuilder.rangePlan(
+        for: "<div>Test</div>",
+        requestedRange: NSRange(location: NSNotFound, length: 0)
     )
 
-    #expect(expandedRange.location == 0)
-    #expect(expandedRange.length == 0)
+    #expect(plan.coveredRange.location == 0)
+    #expect(plan.coveredRange.length == 0)
+    #expect(plan.spans.isEmpty)
 }
 
-// Exercises `highlightRange`, which is deprecated but still shipped: it
-// writes colours into the text storage instead of vending them per
-// paragraph. Marking the test deprecated too is how Swift says "the call
-// is deliberate" — without it every call site warns.
-@available(*, deprecated)
 @Test func testUTF16RangeHandling() async throws {
     let html = #"<div title="emoji 😀">Привет 😀</div>"#
-    let textStorage = NSTextStorage(string: html)
-    var expandedRange = NSRange(location: 0, length: 0)
-
     let utf16Location = (html as NSString).range(of: "😀").location
-    HTMLSyntaxHighlighter.highlightRange(
-        in: textStorage,
-        range: NSRange(location: utf16Location, length: 2),
-        theme: makeTestTheme(),
-        expandedRange: &expandedRange
+    let plan = HTMLHighlightPlanBuilder.rangePlan(
+        for: html,
+        requestedRange: NSRange(location: utf16Location, length: 2)
     )
 
-    #expect(expandedRange.location != NSNotFound)
-    #expect(NSMaxRange(expandedRange) <= textStorage.length)
+    #expect(plan.coveredRange.location != NSNotFound)
+    #expect(NSMaxRange(plan.coveredRange) <= (html as NSString).length)
 }
 
-// Exercises `highlightRange`, which is deprecated but still shipped: it
-// writes colours into the text storage instead of vending them per
-// paragraph. Marking the test deprecated too is how Swift says "the call
-// is deliberate" — without it every call site warns.
-@available(*, deprecated)
 @Test func testPartialAnchorTagDoesNotBreakHighlighting() async throws {
     let html = "<div>prefix <a href suffix</div>"
     let result = HTMLSyntaxHighlighter.highlight(html: html, theme: makeTestTheme())
 
     #expect(result.string == html)
 
-    let textStorage = NSTextStorage(string: html)
-    var expandedRange = NSRange(location: 0, length: 0)
     let location = (html as NSString).range(of: "<a href").location
-    HTMLSyntaxHighlighter.highlightRange(
-        in: textStorage,
-        range: NSRange(location: location, length: 7),
-        theme: makeTestTheme(),
-        expandedRange: &expandedRange
+    let plan = HTMLHighlightPlanBuilder.rangePlan(
+        for: html,
+        requestedRange: NSRange(location: location, length: 7)
     )
 
-    #expect(expandedRange.location != NSNotFound)
-    #expect(NSMaxRange(expandedRange) <= textStorage.length)
+    #expect(plan.coveredRange.location != NSNotFound)
+    #expect(NSMaxRange(plan.coveredRange) <= (html as NSString).length)
 }
 
 @Test func testUnquotedAttributeValueHighlighting() async throws {
@@ -144,30 +104,17 @@ import UIKit
     #expect(valueColor == theme.attributeValue)
 }
 
-// Exercises `highlightRange`, which is deprecated but still shipped: it
-// writes colours into the text storage instead of vending them per
-// paragraph. Marking the test deprecated too is how Swift says "the call
-// is deliberate" — without it every call site warns.
-@available(*, deprecated)
 @Test func testLargeDocumentMidEditRangeHighlighting() async throws {
     let repeated = String(repeating: "<p>section</p>\n", count: 2000)
     let insertion = "<a href"
     let largeHTML = repeated + insertion + repeated
 
-    let textStorage = NSTextStorage(string: largeHTML)
-    var expandedRange = NSRange(location: 0, length: 0)
     let insertionRange = (largeHTML as NSString).range(of: insertion)
+    let plan = HTMLHighlightPlanBuilder.rangePlan(for: largeHTML, requestedRange: insertionRange)
 
-    HTMLSyntaxHighlighter.highlightRange(
-        in: textStorage,
-        range: insertionRange,
-        theme: makeTestTheme(),
-        expandedRange: &expandedRange
-    )
-
-    #expect(expandedRange.location != NSNotFound)
-    #expect(NSMaxRange(expandedRange) <= textStorage.length)
-    #expect(expandedRange.length <= 2000)
+    #expect(plan.coveredRange.location != NSNotFound)
+    #expect(NSMaxRange(plan.coveredRange) <= (largeHTML as NSString).length)
+    #expect(plan.coveredRange.length <= 2000)
 }
 
 @Test func testLargeContentHandling() async throws {
